@@ -43,7 +43,7 @@ const ui = {
   btnPlay: $('btnPlay'), rngZeit: $('rngZeit'), zeit: $('zeit'), btnExport: $('btnExport'), dateiJson: $('dateiJson'),
   chkLuftband: $('chkLuftband'), selAkkorde: $('selAkkorde'), selKlang: $('selKlang'), rngEmpfindlich: $('rngEmpfindlich'),
   btnTonspur: $('btnTonspur'), btnMidi: $('btnMidi'),
-  chkBlender: $('chkBlender'), txtBlender: $('txtBlender'), blenderInfo: $('blenderInfo'),
+  chkBlender: $('chkBlender'), txtBlender: $('txtBlender'), txtBlenderKennwort: $('txtBlenderKennwort'), blenderInfo: $('blenderInfo'),
 };
 
 const studio = new Studio3D($('dreiD'));
@@ -1794,9 +1794,16 @@ ui.dateiJson.onchange = () => { const f = ui.dateiJson.files[0]; ui.dateiJson.va
 // Live-Stream an Blender: nach jedem Bild Gelenke, Kopf und Mimik aller sichtbaren Figuren
 const BLENDER_TEXTE = {
   aus: 'aus', verbinde: 'verbinde …', verbunden: 'verbunden – Blender bekommt die Bewegung',
-  wartet: 'wartet auf Blender (Addon gestartet?) – versuche es alle 2 s', fehler: 'Adresse ungültig (z. B. ws://localhost:8765)',
+  wartet: 'wartet auf Blender (Addon gestartet?) – versuche es alle 2 s', fehler: 'Adresse ungültig (z. B. localhost oder 192.168.1.23)',
+  wartetNetz: 'wartet auf Blender – Empfang dort gestartet und „Im Netzwerk erreichbar“ an? Firewall erlaubt? Versuche es alle 2 s',
+  kennwort: 'Blender hat abgelehnt: Kennwort falsch',
+  https: 'Diese Seite läuft über https und darf kein ws:// an einen anderen Rechner schicken – Studio über http://localhost öffnen',
 };
-const blender = new BlenderStream({ beiStatus: z => { ui.blenderInfo.textContent = BLENDER_TEXTE[z] ?? z; } });
+const blender = new BlenderStream({ beiStatus: z => {
+  const ziel = z === 'verbunden' ? ` (${blender.ziel})` : '';
+  ui.blenderInfo.textContent = (BLENDER_TEXTE[z] ?? z) + ziel;
+  if (z === 'kennwort' || z === 'https' || z === 'fehler') ui.chkBlender.checked = false;
+} });
 studio.nachBild = s => {
   if (!blender.verbunden) return;
   const aufnahme = S.mode === 'take' && S.take;
@@ -1804,10 +1811,10 @@ studio.nachBild = s => {
 };
 ui.txtBlender.value = gemerkt('blender-adresse') || ui.txtBlender.value;
 ui.chkBlender.onchange = () => {
-  if (ui.chkBlender.checked) { merken('blender-adresse', ui.txtBlender.value.trim()); blender.starten(ui.txtBlender.value.trim()); }
+  if (ui.chkBlender.checked) { merken('blender-adresse', ui.txtBlender.value.trim()); blender.starten(ui.txtBlender.value.trim(), ui.txtBlenderKennwort.value); }
   else blender.stoppen();
 };
-ui.txtBlender.onchange = () => { if (ui.chkBlender.checked) { blender.stoppen(); ui.chkBlender.onchange(); } };
+ui.txtBlender.onchange = ui.txtBlenderKennwort.onchange = () => { if (ui.chkBlender.checked) { blender.stoppen(); ui.chkBlender.checked = true; ui.chkBlender.onchange(); } };
 
 addEventListener('keydown', e => {
   if (e.key === 'Escape') {

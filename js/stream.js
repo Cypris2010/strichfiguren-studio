@@ -1,6 +1,8 @@
 // Live-Stream der Bewegungsdaten an Blender (Addon blender/strichfiguren_live.py).
 //
-// Das Addon startet in Blender einen kleinen WebSocket-Server (Standard: ws://localhost:8765). Das Studio
+// Das Addon startet in Blender einen kleinen WebSocket-Server (Standard: ws://localhost:8765). Läuft Blender
+// auf einem anderen Rechner im Netzwerk, trägt man dessen Adresse ein (z. B. 192.168.1.23 – „ws://“ und der
+// Port 8765 werden ergänzt). Ein Kennwort geht als ?k=… mit. Das Studio
 // schickt nach jedem gezeichneten Bild, höchstens 60-mal pro Sekunde, was die Figuren gerade tun:
 //
 //   { format: 'strichfiguren-live', version: 1, t, modus, spielt, figuren: [{ nr, gelenke: { pelvis: [x,y,z], … },
@@ -14,6 +16,19 @@ const FORMAT = 'strichfiguren-live';
 const MIN_ABSTAND = 1000 / 60;   // ms
 const r4 = v => Math.round(v * 1e4) / 1e4;
 
+// „192.168.1.23“, „mac-studio.local:9000“ oder „ws://…“ → vollständige ws://-Adresse (wirft bei Unsinn)
+export function adresseNormalisieren(eingabe, kennwort = '') {
+  let a = eingabe.trim();
+  if (!/^wss?:\/\//i.test(a)) a = 'ws://' + a;
+  const url = new URL(a);
+  if (!url.hostname) throw new Error('keine Adresse');
+  if (!url.port && url.protocol === 'ws:') url.port = '8765';
+  if (kennwort) url.searchParams.set('k', kennwort);
+  return url.href;
+}
+
+const LOKAL = /^(localhost|127\.|\[::1\])/i;
+
 export class BlenderStream {
   constructor({ beiStatus = () => {} } = {}) {
     this.ws = null;
@@ -26,11 +41,18 @@ export class BlenderStream {
     this.wiederholung = null;
   }
 
-  starten(adresse) {
-    this.adresse = adresse || this.adresse;
+  starten(adresse, kennwort = '') {
+    try { this.adresse = adresseNormalisieren(adresse || this.adresse, kennwort); } catch { this.beiStatus('fehler'); return; }
     this.an = true;
+    // Eine https-Seite darf kein unverschlüsseltes ws:// zu einem anderen Rechner öffnen
+    const host = new URL(this.adresse).host;
+    if (location.protocol === 'https:' && this.adresse.startsWith('ws:') && !LOKAL.test(host)) {
+      this.an = false; this.beiStatus('https'); return;
+    }
     this.verbinden();
   }
+
+  get ziel() { return new URL(this.adresse).host; }
 
   stoppen() {
     this.an = false;
@@ -49,10 +71,11 @@ export class BlenderStream {
     this.ws = ws;
     ws.onopen = () => { this.letzte = []; this.gesendet = 0; this.beiStatus('verbunden'); };
     // Blender noch nicht bereit oder Addon gestoppt: alle 2 s neu versuchen
-    ws.onclose = () => {
+    ws.onclose = e => {
       this.ws = null;
       if (!this.an) return;
-      this.beiStatus('wartet');
+      if (e.code === 4001) { this.an = false; this.beiStatus('kennwort'); return; }   // nicht dauernd neu probieren
+      this.beiStatus(LOKAL.test(this.ziel) ? 'wartet' : 'wartetNetz');
       this.wiederholung = setTimeout(() => this.verbinden(), 2000);
     };
     ws.onerror = () => {};

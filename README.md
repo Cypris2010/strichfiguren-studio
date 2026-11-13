@@ -162,8 +162,29 @@ zu Gelenk reichen, und dem Kopf `SF1_Kopf`. Der Kopf trägt die Drehung und die 
 ab, landet jedes Bild bei seiner Aufnahme-Zeit (ab dem Startbild der Szene). So passt es später zur Tonspur.
 Live wird ab dem aktuellen Bild in Echtzeit aufgezeichnet.
 
-Format der Nachrichten: siehe Kopf von `js/stream.js`. Der Server lauscht nur auf diesem Rechner (127.0.0.1)
-und braucht in Blender keine zusätzlichen Pakete.
+### Blender auf einem anderen Rechner im Netzwerk
+
+Kamera und Studio laufen auf Rechner A, Blender auf Rechner B (gleiches WLAN/LAN):
+
+1. **Rechner B (Blender):** In der Seitenleiste vor dem Start **Im Netzwerk erreichbar** anhaken, optional ein
+   **Kennwort** setzen, dann **Empfang starten**. Darunter steht die Adresse, z. B. `ws://192.168.1.23:8765`.
+   Oder per Startskript:
+   ```bash
+   /Applications/Blender.app/Contents/MacOS/Blender --python blender/live_starten.py -- --netz --kennwort geheim
+   ```
+   Beim ersten Mal fragt macOS, ob Blender eingehende Verbindungen annehmen darf: **Erlauben**.
+2. **Rechner A (Studio):** Das Studio wie gewohnt über `http://localhost:8123` öffnen (die Kamera braucht
+   `localhost`). Unter **Live an Blender** die Adresse von Rechner B eintragen. `192.168.1.23` reicht, `ws://` und
+   Port 8765 werden ergänzt. Dazu das Kennwort eintragen, dann *Bewegung senden* anhaken.
+   macOS fragt eventuell, ob der Browser auf Geräte im lokalen Netzwerk zugreifen darf. Auch das erlauben
+   (*Systemeinstellungen → Datenschutz & Sicherheit → Lokales Netzwerk*).
+
+Blender zeigt an, von welchem Rechner gesendet wird, und meldet Versuche mit falschem Kennwort. Ohne Kennwort
+kann jeder im selben Netz senden. Zuhause ist das unkritisch, in fremden Netzen besser ein Kennwort setzen. Die
+Daten sind nicht verschlüsselt.
+
+Format der Nachrichten: siehe Kopf von `js/stream.js`. Der Server lauscht ohne „Im Netzwerk erreichbar“ nur auf
+diesem Rechner (127.0.0.1) und braucht in Blender keine zusätzlichen Pakete.
 
 ## Tipps für Aufnahmen
 

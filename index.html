@@ -173,10 +173,13 @@
         <legend>Live an Blender</legend>
         <div class="zeile">
           <label title="Schickt Gelenke, Kopfdrehung und Mimik live an das Blender-Addon (blender/strichfiguren_live.py)"><input type="checkbox" id="chkBlender"> Bewegung senden</label>
-          <label>an <input type="text" id="txtBlender" value="ws://localhost:8765" size="18" spellcheck="false" aria-label="Adresse des Blender-Addons"></label>
+          <label>an <input type="text" id="txtBlender" value="localhost" size="18" spellcheck="false" autocapitalize="off" aria-label="Adresse des Blender-Addons" title="localhost = Blender auf diesem Rechner. Sonst die Adresse, die Blender in der Seitenleiste zeigt, z. B. 192.168.1.23"></label>
+        </div>
+        <div class="zeile">
+          <label>Kennwort <input type="password" id="txtBlenderKennwort" size="10" autocomplete="off" aria-label="Kennwort für den Blender-Empfang" title="Nur nötig, wenn in Blender ein Kennwort gesetzt ist"></label>
         </div>
         <div class="zeile"><span class="gedimmt klein" id="blenderInfo">aus</span></div>
-        <p class="hinweis">In Blender das Addon „Strichfiguren live“ installieren und dort „Empfang starten“. Funktioniert live mit Kamera und beim Abspielen einer Aufnahme.</p>
+        <p class="hinweis">In Blender das Addon „Strichfiguren live“ installieren und dort „Empfang starten“. Funktioniert live mit Kamera und beim Abspielen einer Aufnahme. Läuft Blender auf einem anderen Rechner: dort „Im Netzwerk erreichbar“ anhaken und die angezeigte Adresse hier eintragen.</p>
       </fieldset>
     </div>
 
