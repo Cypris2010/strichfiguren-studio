@@ -73,7 +73,11 @@ export function buildRig(p, opts) {
   q.headC = mitte(q.lEar, q.rEar);
   const richtung = {};
   for (const [kind, eltern] of KNOCHEN) richtung[kind] = einheit(minus(q[kind], q[eltern])) ?? STANDARD[kind];
-  return aufbauen(richtung, opts);
+  const j = aufbauen(richtung, opts);
+  // grobe Kopfrichtung aus der Pose (Ohrenlinie, Nase), falls kein Gesicht erkannt wurde
+  const x = einheit(minus(q.lEar, q.rEar));
+  if (x) j.kopf = { x, f: minus(q.nose, q.headC) };
+  return j;
 }
 
 // Linien für die Einblendung im Video (MediaPipe-Nummern)

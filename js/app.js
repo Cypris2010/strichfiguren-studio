@@ -5,15 +5,17 @@
 //   analyse  Videodatei wird Bild für Bild (30 oder 60 pro Sekunde) genau ausgewertet
 //   take     fertige Aufnahme: abspielen, ansehen, als JSON speichern
 //
-// Zwei Kameras: Die zweite filmt entweder dieselbe Person aus einem anderen Winkel – dann werden
-// beide Ansichten zu einer genaueren Figur verschmolzen – oder eine zweite Person mit eigener Figur
-// und eigenem Instrument.
+// Jede Kamera hat eine Aufgabe (Körper, Gesicht oder beides) und arbeitet einer Figur zu. Die zweite
+// Kamera kann so dieselbe Person aus einem anderen Winkel filmen (die Körper werden zu einer genaueren
+// Figur verschmolzen), nur das Gesicht in Nahaufnahme liefern oder eine zweite Person mit eigener Figur.
+// Diese Einstellungen merkt sich das Studio je Gerät (z. B. iPhone und Mac-Kamera).
 //
-// Zusätzlich zur Pose: farbiges Tape als Marker (A = Gitarrenkopf / Stickspitzen, B = Becken),
-// das Einmessen des Schlagzeugs per Klick ins Video und das Luftband (Bewegung → Töne, WAV, MIDI).
+// Band-Funktionen (im Einstellungs-Reiter „Band“, standardmäßig aus): Instrumente, farbiges Tape als
+// Marker (A = Gitarrenkopf / Stickspitzen, B = Becken), Schlagzeug einmessen, Luftband (Töne, WAV, MIDI).
 import { Studio3D } from './scene.js';
 import { createDetector } from './pose.js';
-import { PoseFilter, ExtraFilter } from './filter.js';
+import { PoseFilter, ExtraFilter, GesichtFilter } from './filter.js';
+import { createGesicht, mimik as mimikRoh, GESICHT_LINIEN, NeutralSchaetzer, neutralAusFrames } from './face.js';
 import { buildRig, restPose, OVERLAY_LINIEN } from './rig.js';
 import { ankerBerechnen, KIT_TEILE } from './instrumente.js';
 import { MarkerSucher, markerAuswerten, trommelKandidaten, beckenRuhe } from './marker.js';
@@ -25,11 +27,14 @@ import { Verschmelzer } from './ansichten.js';
 const FORMAT = 'strichfiguren-take';
 const $ = id => document.getElementById(id);
 const ui = {
-  status: $('status'), messung: $('messung'), videos: $('videos'),
-  btnKamera: $('btnKamera'), btnKamera2: $('btnKamera2'), selZweite: $('selZweite'),
+  status: $('status'), messung: $('messung'), videos: $('videos'), buehne: document.querySelector('.buehne'),
+  btnEinstellungen: $('btnEinstellungen'), btnEinstellungenZu: $('btnEinstellungenZu'), einstellungen: $('einstellungen'),
+  chkBand: $('chkBand'), bandBereich: $('bandBereich'), bandAus: $('bandAus'), selFigur2: $('selFigur2'), rngMimik: $('rngMimik'),
+  kameraBlock2: $('kameraBlock2'),
+  btnKamera: $('btnKamera'), btnKamera2: $('btnKamera2'),
   lblVideo: $('lblVideo'), dateiVideo: $('dateiVideo'),
   btnAufnahme: $('btnAufnahme'), btnAnalyse: $('btnAnalyse'),
-  selModell: $('selModell'), selFps: $('selFps'), chkSpiegeln: $('chkSpiegeln'),
+  selModell: $('selModell'), selFps: $('selFps'),
   chkMarker: $('chkMarker'), btnFarbeA: $('btnFarbeA'), btnFarbeB: $('btnFarbeB'), feldA: $('feldA'), feldB: $('feldB'),
   rngToleranz: $('rngToleranz'), btnEinmessen: $('btnEinmessen'), btnKitZurueck: $('btnKitZurueck'),
   rolleText: $('rolleText'), zweitesInstrument: $('zweitesInstrument'),
@@ -57,6 +62,11 @@ function personAnlegen(nr, el) {
     luftFilter: luftFilter(), luftExtras: luftExtraFilter(),   // Luftband: eigene, ganz leichte Glättung
     luftband: new Luftband(),
     letzteErkennung: null,
+    // Gesicht: Erkennung je Kamera, Ruhegesicht je Kamera (= je Person vor dieser Kamera)
+    gesicht: null, gesichtLaden: null, neutral: new NeutralSchaetzer(),
+    // nur bei Figuren-Besitzern: bestes Gesicht der letzten Zeit (aus welcher Kamera auch immer) und seine Glättung
+    kandidat: null, gesichtVon: null, liveGesichtFilter: new GesichtFilter(staerke()), letzterRig: null,
+    gPosen: null,
     letztesBild: -Infinity, liveSeit: 0,   // Live: wann kam das letzte neue Bild, seit wann läuft die Kamera (ms)
     kitBild: {},         // eingemessene Stellen im Videobild { teil: [u, v] }
     posen: null, extras: null, rohExtras: null,
@@ -69,10 +79,12 @@ const P = [
   personAnlegen(0, {
     video: $('video'), overlay: $('overlay'), rahmen: $('videoRahmen'), leer: $('videoLeer'), etikett: $('etikett1'),
     hud: $('hud'), selKamera: $('selKamera'), selRolle: $('selRolle'), selHand: $('selHand'),
+    selAufgabe: $('selAufgabe1'), chkSpiegeln: $('chkSpiegeln1'), btnNeutral: $('btnNeutral1'), neutralInfo: $('neutralInfo1'),
   }),
   personAnlegen(1, {
     video: $('video2'), overlay: $('overlay2'), rahmen: $('videoRahmen2'), leer: $('videoLeer2'), etikett: $('etikett2'),
     hud: $('hud2'), selKamera: $('selKamera2'), selRolle: $('selRolle2'), selHand: $('selHand2'),
+    selAufgabe: $('selAufgabe2'), chkSpiegeln: $('chkSpiegeln2'), btnNeutral: $('btnNeutral2'), neutralInfo: $('neutralInfo2'),
   }),
 ];
 const [P1, P2] = P;
@@ -99,10 +111,26 @@ const r3 = v => Math.round(v * 1000) / 1000;
 const r4 = v => Math.round(v * 1e4) / 1e4;
 const zeitText = s => { const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`; };
 const einmal = (el, ereignis) => new Promise(ok => el.addEventListener(ereignis, ok, { once: true }));
-const rolle = p => p.selRolle.value;
+// Band-Funktionen aus: keine Instrumente, keine Marker, kein Luftband
+const bandAn = () => ui.chkBand.checked;
+const rolle = p => (bandAn() ? p.selRolle.value : '');
+// Was eine Kamera auswertet
+const koerperAn = p => p.selAufgabe.value !== 'gesicht';
+const gesichtAn = p => p.selAufgabe.value !== 'koerper';
+const AUFGABEN = { beides: 'Körper + Gesicht', koerper: 'Körper', gesicht: 'Gesicht' };
+// Wofür die zweite Kamera da ist: Figur 1 (zweiter Winkel oder Gesicht) oder eine eigene Figur
+const zweiteModus = () => (ui.selFigur2.value === '1' ? 'person' : 'winkel');
 // Hat diese Kamera eine eigene Figur? Die erste immer, die zweite nur im Modus „eigene Figur“.
 const hatFigur = p => p.aktiv && (p.nr === 0 || S.zweite === 'person');
-const zweiWinkel = () => P2.aktiv && S.zweite === 'winkel';
+// Zwei Körper-Ansichten derselben Person verschmelzen
+const zweiWinkel = () => P2.aktiv && S.zweite === 'winkel' && koerperAn(P1) && koerperAn(P2);
+// Zu welcher Figur (Person mit Figur) die Bilder einer Kamera gehören
+const besitzer = p => (hatFigur(p) ? p : P1);
+// Liefert irgendeine Kamera den Körper für diese Figur? Sonst steht sie und nur das Gesicht bewegt sich.
+const hatKoerperQuelle = o => P.some(p => p.aktiv && besitzer(p) === o && koerperAn(p));
+// Namen der Blendshapes (sind bei allen Gesichtsmodellen gleich)
+const gesichtsNamen = () => P.find(p => p.gesicht?.namen)?.gesicht.namen ?? null;
+const mimik = (g, namen, neutral) => mimikRoh(g, namen, +ui.rngMimik.value, neutral);
 // Daten einer Person in der geladenen Aufnahme: { instrument, seitenverhaeltnis, frames }
 const takeDaten = p => (p.nr === 0 ? S.take : S.take?.zweite) ?? null;
 const seitenverhaeltnis = p => (p.video.videoWidth && p.video.videoHeight
@@ -114,7 +142,8 @@ const kameraName = p => p.stream?.getVideoTracks()[0]?.label || 'der Kamera';
 function gemerkt(schluessel) { try { return localStorage.getItem(schluessel) || ''; } catch { return ''; } }
 function merken(schluessel, wert) { try { localStorage.setItem(schluessel, wert); } catch { /* dann eben nicht merken */ } }
 const KAMERA_SPEICHER = ['strichfiguren-kamera', 'strichfiguren-kamera2'];
-const MODUS_SPEICHER = 'strichfiguren-zweite';
+const GERAETE_SPEICHER = 'strichfiguren-geraete';   // Einstellungen je Kamera-Gerät
+const BAND_SPEICHER = 'strichfiguren-band';
 
 for (const p of P) p.figur.setPose(restPose(rigOpts()));
 
@@ -136,9 +165,55 @@ function detektor(p) {
   return p.laden;
 }
 
+// Gesichtserkennung je Kamera (MediaPipe verfolgt das Gesicht von Bild zu Bild); auch nacheinander laden
+function gesichtErkennung(p) {
+  if (p.gesicht) return Promise.resolve(p.gesicht);
+  p.gesichtLaden ??= ladeKette = ladeKette.catch(() => {}).then(() => createGesicht())
+    .then(g => { p.gesicht = g; return g; })
+    .catch(err => { console.error(err); status('Gesichtsmodell nicht geladen: ' + err.message); return null; })
+    .finally(() => { p.gesichtLaden = null; });
+  return p.gesichtLaden;
+}
+
+// Gesichtsmodell bei Bedarf im Hintergrund laden; Körper läuft so lange schon
+function gesichtVorbereiten(p) {
+  if (gesichtAn(p) && !p.gesicht) gesichtErkennung(p);
+  p.gesicht?.reset();
+}
+
+// ---------- Einstellungen je Kamera-Gerät ----------
+// Gemerkt werden Aufgabe, Spiegeln, Figur (zweite Kamera) und ein gemerktes Ruhegesicht.
+function geraete() { try { return JSON.parse(gemerkt(GERAETE_SPEICHER) || '{}'); } catch { return {}; } }
+
+function geraetEinstellungenLaden(p) {
+  const id = kameraId(p), e = id && geraete()[id];
+  p.chkSpiegeln.checked = e?.spiegeln ?? true;      // Kameras standardmäßig wie ein Spiegel
+  p.selAufgabe.value = e?.aufgabe ?? 'beides';
+  if (p.nr === 1 && e?.figur !== undefined) ui.selFigur2.value = String(e.figur);
+  p.neutral.reset();
+  if (e?.neutral) p.neutral.merken(e.neutral);
+  neutralAnzeigen(p);
+}
+
+function geraetEinstellungenSpeichern(p) {
+  const id = kameraId(p);
+  if (!id) return;   // Videodatei: nichts zu merken
+  const alle = geraete();
+  alle[id] = {
+    name: kameraName(p), spiegeln: p.chkSpiegeln.checked, aufgabe: p.selAufgabe.value,
+    ...(p.nr === 1 && { figur: +ui.selFigur2.value }),
+    ...(p.neutral.fest && { neutral: p.neutral.werte.map(v => Math.round(v * 100) / 100) }),
+  };
+  merken(GERAETE_SPEICHER, JSON.stringify(alle));
+}
+
+function neutralAnzeigen(p) {
+  p.neutralInfo.textContent = p.neutral.fest ? 'Ruhegesicht: gemerkt' : 'Ruhegesicht: automatisch';
+}
+
 // ---------- Tape-Marker ----------
 function markerZiele(p) {
-  if (!ui.chkMarker.checked) return null;
+  if (!bandAn() || !ui.chkMarker.checked) return null;
   const tol = +ui.rngToleranz.value;
   return [{ ...S.marker.a, tol, max: 3 }, rolle(p) === 'schlagzeug' ? { ...S.marker.b, tol, max: 4 } : null];
 }
@@ -159,7 +234,8 @@ function farbfelder() {
 }
 
 // ---------- Einblendung im Video ----------
-function zeichneOverlay(p, q, f) {
+// e: Ergebnis der Gesichtserkennung (live: Rahmen aller Gesichter und Gesichtslinien) oder { gesicht } aus einer Aufnahme
+function zeichneOverlay(p, q, f, e = null) {
   const c = p.overlay, v = p.video, w = v.videoWidth, h = v.videoHeight;
   const g = c.getContext('2d');
   if (!w || !h) { g.clearRect(0, 0, c.width, c.height); return; }
@@ -167,6 +243,7 @@ function zeichneOverlay(p, q, f) {
   g.clearRect(0, 0, w, h);
   const dicke = Math.max(2, w / 300);
   g.lineCap = 'round';
+  gesichtEinblenden(g, e, w, h, dicke);
   if (q) {
     g.lineWidth = dicke;
     g.strokeStyle = 'rgba(70, 240, 255, .9)';
@@ -190,7 +267,7 @@ function zeichneOverlay(p, q, f) {
   for (const [u, vv] of f?.mb ?? []) kreis(u, vv, `rgb(${S.marker.b.rgb})`);
   // Eingemessene Teile des Schlagzeugs
   if (hatFigur(p) && rolle(p) === 'schlagzeug') {
-    const gespiegelt = ui.chkSpiegeln.checked;
+    const gespiegelt = p.chkSpiegeln.checked;
     g.font = `600 ${Math.round(dicke * 7)}px system-ui, sans-serif`;
     for (const [name, [u, vv]] of Object.entries(p.kitBild)) {
       const x = u * w, y = vv * h, a = dicke * 5;
@@ -210,15 +287,39 @@ function zeichneOverlay(p, q, f) {
   }
 }
 
+function gesichtEinblenden(g, e, w, h, dicke) {
+  if (!e) return;
+  // alle Gesichter, die der Detektor findet: gestrichelte Rahmen
+  g.lineWidth = Math.max(1, dicke * 0.6);
+  g.strokeStyle = 'rgba(255, 255, 255, .7)';
+  g.setLineDash([dicke * 3, dicke * 2]);
+  for (const b of e.boxen ?? []) g.strokeRect(b.x * w, b.y * h, b.w * w, b.h * h);
+  g.setLineDash([]);
+  // das ausgewertete Gesicht: Umriss, Augen, Brauen, Mund – in einer Aufnahme nur der Rahmen
+  g.strokeStyle = 'rgba(255, 210, 90, .95)';
+  if (e.punkte) {
+    const Q = e.punkte;
+    g.lineWidth = Math.max(1, dicke * 0.5);
+    g.beginPath();
+    for (const [i, k] of GESICHT_LINIEN) { g.moveTo(Q[i][0] * w, Q[i][1] * h); g.lineTo(Q[k][0] * w, Q[k][1] * h); }
+    g.stroke();
+  } else if (e.gesicht?.k) {
+    const [x, y, bw, bh] = e.gesicht.k;
+    g.lineWidth = Math.max(1, dicke * 0.6);
+    g.strokeRect(x * w, y * h, bw * w, bh * h);
+  }
+}
+
 function zeigeVideo(p, sichtbar, text) {
   p.leer.hidden = sichtbar;
   if (text) p.leer.textContent = text;
 }
 
+// Spiegeln je Kamera; eine Figur folgt der Kamera, die sie besitzt
 function spiegeln() {
-  const an = ui.chkSpiegeln.checked;
-  for (const p of P) p.rahmen.classList.toggle('gespiegelt', an);
-  studio.setSpiegeln(an);
+  for (const p of P) p.rahmen.classList.toggle('gespiegelt', p.chkSpiegeln.checked);
+  studio.setSpiegeln(P1.chkSpiegeln.checked, 0);
+  studio.setSpiegeln(P2.chkSpiegeln.checked, 1);
 }
 
 function neueVideoUrl(p, blobOderDatei) {
@@ -247,11 +348,14 @@ function ansichtAnpassen() {
   const zwei = P2.aktiv, eigene = hatFigur(P2);
   P2.rahmen.hidden = !zwei;
   ui.videos.classList.toggle('zwei', zwei);
-  P1.etikett.textContent = eigene ? 'Person 1' : 'Winkel 1';
-  P2.etikett.textContent = eigene ? 'Person 2' : 'Winkel 2';
+  // Etikett im Video: was diese Kamera auswertet und für welche Figur
+  const figurText = p => (zwei ? ` → Figur ${besitzer(p).nr + 1}` : '');
+  for (const p of P) p.etikett.textContent = `Kamera ${p.nr + 1} · ${AUFGABEN[p.selAufgabe.value]}${figurText(p)}`;
+  P1.etikett.hidden = !zwei && P1.selAufgabe.value === 'beides';   // bei einer Kamera nur zeigen, wenn es etwas zu sagen gibt
   studio.setFigurenZahl(eigene ? 2 : 1);
   ui.zweitesInstrument.hidden = !eigene;
-  ui.rolleText.textContent = eigene ? 'Person 1' : 'Instrument';
+  ui.rolleText.textContent = eigene ? 'Figur 1' : 'Instrument';
+  ui.kameraBlock2.classList.toggle('aus', !P2.aktiv);
   const live = S.mode === 'live' && S.quelle === 'kamera', mehrere = S.kameras.length >= 2;
   ui.btnKamera2.textContent = P2.stream ? '✕ 2. Kamera' : '+ 2. Kamera';
   // Nicht einfach ausgrauen: Ein Klick sagt, was fehlt (erste Kamera starten, zweite Kamera nicht zu sehen)
@@ -260,8 +364,9 @@ function ansichtAnpassen() {
   ui.btnKamera2.title = P2.stream ? 'Zweite Kamera ausschalten'
     : mehrere ? 'Eine zweite Kamera dazunehmen (erst die erste mit „Kamera“ starten)'
       : 'Braucht eine zweite Kamera, z. B. das iPhone (am Mac als Integrationskamera)';
-  P1.selKamera.hidden = !mehrere;
-  P2.selKamera.hidden = !P2.stream || !mehrere;
+  P1.selKamera.disabled = !S.kameras.length;
+  P2.selKamera.disabled = !mehrere;
+  spiegeln();
 }
 
 // ---------- Aufräumen ----------
@@ -282,6 +387,7 @@ function zweiteZuruecksetzen() {
   P2.aktiv = false;
   P2.mitVideo = false;
   P2.letzteErkennung = null;
+  P2.kandidat = P1.kandidat = null;
   P1.stehtGemeldet = P2.stehtGemeldet = false;
   zeichneOverlay(P2, null);
   S.verschmelzer.reset();
@@ -306,6 +412,9 @@ function stoppeAlles() {
     kameraStoppen(p);
     p.video.pause();
     p.letzteErkennung = null;
+    p.kandidat = null;
+    p.letzterRig = null;
+    p.figur.setMimik(null);
     zeichneOverlay(p, null);
   }
   S.uhr.laeuft = false;
@@ -315,7 +424,7 @@ function stoppeAlles() {
 
 function takeEntfernen() {
   S.take = null;
-  for (const p of P) Object.assign(p, { posen: null, extras: null, rohExtras: null, toene: null, tonZeit: null, mitVideo: false });
+  for (const p of P) Object.assign(p, { posen: null, gPosen: null, extras: null, rohExtras: null, toene: null, tonZeit: null, mitVideo: false });
   ui.btnPlay.disabled = ui.rngZeit.disabled = ui.btnExport.disabled = ui.btnTonspur.disabled = ui.btnMidi.disabled = true;
   ui.btnPlay.textContent = '▶';
   ui.rngZeit.value = 0;
@@ -340,6 +449,10 @@ function liveStarten(p) {
   p.liveExtras = new ExtraFilter(staerke());
   p.luftFilter = luftFilter();
   p.luftExtras = luftExtraFilter();
+  gesichtVorbereiten(p);
+  besitzer(p).liveGesichtFilter.reset();
+  besitzer(p).kandidat = null;
+  p.letzterRig = null;
   S.verschmelzer.reset();   // neue Kamera: der Winkel zwischen beiden muss neu bestimmt werden
   messungZuruecksetzen(p);
   p.figur.setAnker(null);
@@ -357,11 +470,13 @@ function liveStarten(p) {
     if (neuesBild) p.letztesBild = jetzt;
     konto = Math.min(KONTO[1], konto + (jetzt - uhr) * BUDGET / laufendeKameras(jetzt));
     uhr = jetzt;
-    if (p.detector && v.readyState >= 2 && neuesBild && konto > 0) {
+    const koerper = koerperAn(p), gesicht = gesichtAn(p) && p.gesicht;
+    if ((p.detector || !koerper) && (koerper || gesicht) && v.readyState >= 2 && neuesBild && konto > 0) {
       letzteZeit = v.currentTime;
-      const f = p.detector.detect(v, jetzt), erkannt = performance.now();
-      liveBild(p, f, jetzt / 1000);
-      messen(p, jetzt, erkannt - jetzt, performance.now() - erkannt, !!f);
+      const f = koerper ? p.detector.detect(v, jetzt) : null;
+      const e = gesicht ? p.gesicht.detect(v, jetzt, f?.q) : null, erkannt = performance.now();
+      liveBild(p, f, e, jetzt / 1000);
+      messen(p, jetzt, erkannt - jetzt, performance.now() - erkannt, !!(f || e?.gesicht));
       konto = Math.max(KONTO[0], konto - (performance.now() - jetzt));
     }
     plane();
@@ -369,17 +484,55 @@ function liveStarten(p) {
   plane();
 }
 
-function liveBild(p, f, t) {
+// e: Ergebnis der Gesichtserkennung dieser Kamera (oder null)
+function liveBild(p, f, e, t) {
   markerSuchen(p, f);
-  zeichneOverlay(p, f?.q, f);
+  zeichneOverlay(p, f?.q, f, e);
   if (f) p.letzteErkennung = f;
+  const o = besitzer(p);
+  const neuesGesicht = gesichtMelden(o, p, e?.gesicht, t);
+  if (neuesGesicht || (gesichtAn(p) && !e?.gesicht)) mimikZeigen(o, t);
   // Zwei Winkel: beide Kameras liefern der ersten Figur zu
-  if (zweiWinkel()) {
-    f = S.verschmelzer.bild(p.nr, f, t);
-    p = P1;
+  if (zweiWinkel()) f = S.verschmelzer.bild(p.nr, f, t);
+  if (f && koerperAn(p)) figurBewegen(o, f, t);
+  // Figur ohne Körper-Kamera (nur Gesicht): sie steht, aufgenommen wird nur das Gesicht
+  else if (neuesGesicht && !hatKoerperQuelle(o)) {
+    if (!o.letzterRig) o.figur.setPose(restPose(rigOpts()));
+    if (S.aufnahme) S.aufnahme.frames[o.nr].push({ t: r3((performance.now() - S.aufnahme.start) / 1000), g: o.kandidat.g });
   }
-  if (f) figurBewegen(p, f, t);
 }
+
+// ---------- Gesicht einer Figur: aus der Kamera, die es gerade am größten sieht ----------
+const GESICHT_FRISCH = 0.3;   // s: so lange gilt ein Gesicht, bevor eine andere Kamera übernehmen darf
+const flaeche = g => g.k[2] * g.k[3];
+
+// Kopfdrehung aus Kamera 2 in die Ausrichtung von Kamera 1 (nur wenn der Winkel bekannt ist)
+function inKamera1(g, p, verschmelzer = S.verschmelzer) {
+  if (p.nr === 0 || S.zweite !== 'winkel' || !verschmelzer.bereit) return g;
+  const h = -verschmelzer.winkel / 2, s = Math.sin(h), c = Math.cos(h), [x, y, z, w] = g.r;
+  // Drehung um die Senkrechte (y) vor die Kopfdrehung setzen
+  return { ...g, r: [c * x + s * z, c * y + s * w, c * z - s * x, c * w - s * y].map(r4) };
+}
+
+// Meldet das Gesicht einer Kamera ihrer Figur. → true, wenn es übernommen wurde
+function gesichtMelden(o, p, g, t, verschmelzer) {
+  if (!g) return false;
+  const k = o.kandidat;
+  if (k && k.p !== p && t - k.t < GESICHT_FRISCH && t >= k.t && flaeche(k.g) > flaeche(g)) return false;
+  p.neutral.update(g.b);
+  o.kandidat = { g: inKamera1(g, p, verschmelzer), t, p };
+  o.gesichtVon = p;
+  return true;
+}
+
+function mimikZeigen(o, t) {
+  const k = o.kandidat, frisch = k && t - k.t < GESICHT_FRISCH && t >= k.t;
+  const g = o.liveGesichtFilter.apply(frisch ? k.g : null, t);
+  o.figur.setMimik(mimik(g, gesichtsNamen(), o.gesichtVon?.neutral.werte));
+}
+
+// Gesicht für ein aufgenommenes Bild (roh, ungeglättet), wenn es frisch genug ist
+const gesichtFuerBild = (o, t) => (o.kandidat && Math.abs(t - o.kandidat.t) < 0.15 ? o.kandidat.g : undefined);
 
 function figurBewegen(p, f, t) {
   const ins = p.figur.instrumente;
@@ -389,12 +542,13 @@ function figurBewegen(p, f, t) {
     ins.update(jl, p.luftExtras.apply(roh, t), false);
     luftbandZeigen(p, p.luftband.schritt(t, ins.messpunkte(jl), fuesseSichtbar(f.p)));
   }
-  p.figur.setPose(buildRig(p.liveFilter.apply(f.p, t), rigOpts()), p.liveExtras.apply(roh, t));
-  if (S.aufnahme) S.aufnahme.frames[p.nr].push(bildDaten((performance.now() - S.aufnahme.start) / 1000, f));
+  p.letzterRig = buildRig(p.liveFilter.apply(f.p, t), rigOpts());
+  p.figur.setPose(p.letzterRig, p.liveExtras.apply(roh, t));
+  if (S.aufnahme) S.aufnahme.frames[p.nr].push(bildDaten((performance.now() - S.aufnahme.start) / 1000, f, gesichtFuerBild(p, t)));
 }
 
-// Ein Bild für die Aufnahme (q2: Bildpunkte der zweiten Kamera, wenn zwei Winkel verschmolzen wurden)
-const bildDaten = (t, f) => ({ t: r3(t), p: f.p, q: f.q, m: f.m, mb: f.mb, ...(f.q2 && { q2: f.q2 }) });
+// Ein Bild für die Aufnahme (q2: Bildpunkte der zweiten Kamera, wenn zwei Winkel verschmolzen wurden; g: Gesicht)
+const bildDaten = (t, f, g) => ({ t: r3(t), p: f.p, q: f.q, m: f.m, mb: f.mb, ...(f.q2 && { q2: f.q2 }), ...(g && { g }) });
 
 // ---------- Kameras wählen (z. B. das iPhone, am Mac als Integrationskamera) ----------
 // Die Liste hat erst Namen, wenn die Kamera einmal erlaubt wurde
@@ -451,8 +605,12 @@ async function kameraWechseln(p) {
     status('Kamera wird gewechselt …');
     kameraStoppen(p);   // erst die alte freigeben – manche Kameras (iPhone) liefern nur an einen
     p.stream = await kameraOeffnen(id, p.nr ? kameraId(P1) : '');
+    geraetEinstellungenLaden(p);
+    if (p.nr === 1) S.zweite = zweiteModus();
+    ansichtAnpassen();
     p.video.srcObject = p.stream;
     await p.video.play();
+    if (gesichtAn(p)) gesichtErkennung(p);
     liveStarten(p);
     status(`Live mit ${kameraName(p)}.`);
   } catch (err) {
@@ -481,8 +639,9 @@ async function zweiteKameraUmschalten() {
   }
   try {
     status('Zweite Kamera wird gestartet …');
-    S.zweite = ui.selZweite.value;
     P2.stream = await kameraOeffnen(gemerkt(KAMERA_SPEICHER[1]), kameraId(P1));
+    geraetEinstellungenLaden(P2);
+    S.zweite = zweiteModus();
     const v = P2.video;
     v.removeAttribute('src');
     v.controls = false;
@@ -496,13 +655,10 @@ async function zweiteKameraUmschalten() {
     luftbandOberflaeche(P1);
     luftbandOberflaeche(P2);
     await kamerasAuflisten();
-    await detektor(P2);
+    await Promise.all([detektor(P2), gesichtAn(P2) ? gesichtErkennung(P2) : null]);
     if (!P2.stream) return;   // inzwischen wieder ausgeschaltet
     liveStarten(P2);
-    status(S.zweite === 'winkel'
-      ? `Zwei Winkel: ${kameraName(P1)} und ${kameraName(P2)} filmen dieselbe Person, am besten 45–90° auseinander und beide mit dem ganzen Körper im Bild. ` +
-        'Sobald beide dich sehen, wird der Winkel bestimmt und die Figur aus beiden Ansichten verschmolzen (Anzeige oben im Video).'
-      : `Zwei Personen: ${kameraName(P2)} filmt die zweite. Ihr Instrument wählst du rechts unter „Person 2“.`);
+    status(zweiteHinweis());
   } catch (err) {
     console.error(err);
     zweiteZuruecksetzen();
@@ -573,24 +729,41 @@ async function zweiteWiederAus(stehende) {
   kamerasAuflisten();
 }
 
-function zweiteModusWechseln() {
-  merken(MODUS_SPEICHER, ui.selZweite.value);
-  if (S.mode === 'live' && P2.stream) {
-    if (S.aufnahme) { ui.selZweite.value = S.zweite; status('Während einer Aufnahme lässt sich das nicht umstellen.'); return; }
-    S.zweite = ui.selZweite.value;
-    for (const p of P) { p.liveFilter.reset(); p.figur.setAnker(null); }
-    S.verschmelzer.reset();
-    P2.figur.setInstrument(rolle(P2), P2.selHand.value);
-    luftbandOberflaeche(P1);
-    luftbandOberflaeche(P2);
-    ansichtAnpassen();
-    status(S.zweite === 'winkel' ? 'Beide Kameras filmen jetzt dieselbe Person: eine Figur aus zwei Winkeln.'
-      : 'Jede Kamera hat jetzt ihre eigene Figur. Das Instrument der zweiten wählst du unter „Person 2“.');
-  } else if (S.mode === 'take' && P2.aktiv) {
-    status('Gilt für die nächste Aufnahme. „Analysieren“ wertet beide Videos so neu aus.');
-  } else if (!P2.aktiv) {
-    S.zweite = ui.selZweite.value;
+// Was die zweite Kamera gerade tut, in einem Satz
+function zweiteHinweis() {
+  const n1 = kameraName(P1), n2 = kameraName(P2);
+  if (S.zweite === 'person') return `Zwei Personen: ${n2} filmt die zweite Figur. Ihr Instrument wählst du unter Einstellungen → Band.`;
+  if (zweiWinkel()) {
+    return `Zwei Winkel: ${n1} und ${n2} filmen dieselbe Person, am besten 45–90° auseinander und beide mit dem ganzen Körper im Bild. ` +
+      'Sobald beide dich sehen, wird der Winkel bestimmt und die Figur aus beiden Ansichten verschmolzen (Anzeige oben im Video).';
   }
+  if (!koerperAn(P2)) return `${n2} liefert das Gesicht für Figur 1 (am besten nah dran), ${n1} ${koerperAn(P1) ? 'den Körper' : 'auch nur das Gesicht'}.`;
+  return `${n2} liefert den Körper für Figur 1${gesichtAn(P1) ? `, ${n1} das Gesicht` : ''}.`;
+}
+
+// Aufgabe oder Figur einer Kamera geändert: gilt sofort (live) bzw. für die nächste Analyse
+function kameraAufgabeGeaendert(p) {
+  if (p.stream) geraetEinstellungenSpeichern(p);
+  if (S.aufnahme) { status('Während einer Aufnahme lässt sich das nicht umstellen – gilt ab der nächsten.'); }
+  const vorher = S.zweite;
+  if (!S.aufnahme && !(S.mode === 'take' && P2.aktiv)) S.zweite = zweiteModus();
+  if (gesichtAn(p)) gesichtErkennung(p);
+  if (!gesichtAn(p)) { besitzer(p).kandidat = null; zeichneOverlay(p, null); }
+  if (S.mode === 'live') {
+    for (const q of P) { q.liveFilter.reset(); q.figur.setAnker(null); q.liveGesichtFilter.reset(); }
+    if (vorher !== S.zweite) {
+      S.verschmelzer.reset();
+      P2.figur.setInstrument(rolle(P2), P2.selHand.value);
+      luftbandOberflaeche(P1);
+      luftbandOberflaeche(P2);
+    }
+    if (!koerperAn(p) && !hatKoerperQuelle(besitzer(p))) besitzer(p).figur.setPose(restPose(rigOpts()));
+    ansichtAnpassen();
+    if (P2.stream) status(zweiteHinweis());
+  } else if (S.mode === 'take' && P.some(q => q.aktiv && analysierbar(q))) {
+    ansichtAnpassen();
+    status('Gilt für die nächste Auswertung: „Analysieren“ wertet das Video so neu aus.');
+  } else ansichtAnpassen();
 }
 
 // ---------- Messung im Live-Bild: Wie viel Rechenzeit bleibt, z. B. für eine zweite Kamera? ----------
@@ -673,10 +846,10 @@ async function kameraStarten() {
     v.srcObject = P1.stream;
     await v.play();
     S.quelle = 'kamera';
-    ui.chkSpiegeln.checked = true;
-    spiegeln();
+    geraetEinstellungenLaden(P1);
+    ansichtAnpassen();
     zeigeVideo(P1, true);
-    await detektor(P1);
+    await Promise.all([detektor(P1), gesichtAn(P1) ? gesichtErkennung(P1) : null]);
     liveStarten(P1);
     await kamerasAuflisten();
     ui.btnAufnahme.disabled = false;
@@ -704,12 +877,12 @@ async function videoOeffnen(datei) {
     });
     S.quelle = 'datei';
     S.dateiName = datei.name;
-    ui.chkSpiegeln.checked = false;
+    P1.chkSpiegeln.checked = false;   // Videodateien sind normalerweise nicht gespiegelt
     spiegeln();
     zeigeVideo(P1, true);
     ui.btnAufnahme.disabled = true;
     ui.btnAnalyse.disabled = false;
-    await detektor(P1);
+    await Promise.all([detektor(P1), gesichtAn(P1) ? gesichtErkennung(P1) : null]);
     liveStarten(P1);
     ansichtAnpassen();
     status(`${datei.name}: Abspielen zeigt eine Vorschau, „Analysieren“ wertet jedes Bild genau aus.`);
@@ -755,10 +928,10 @@ async function aufnahmeUmschalten() {
     }
     return { p, recorder, teile };
   });
-  S.aufnahme = { start: performance.now(), frames: [[], []], videos, zweite: P2.stream ? S.zweite : null };
+  S.aufnahme = { start: performance.now(), frames: [[], []], videos, zweite: P2.stream ? S.zweite : null, verschmelzen: zweiWinkel() };
   aufnahmeKnopf(true);
   ansichtAnpassen();
-  const wie = videos.length > 1 ? (S.zweite === 'winkel' ? 'mit zwei Winkeln' : 'mit zwei Personen') : '';
+  const wie = videos.length > 1 ? (S.zweite === 'person' ? 'mit zwei Personen' : zweiWinkel() ? 'mit zwei Winkeln' : 'mit zwei Kameras') : '';
   status(`Aufnahme ${wie} läuft (${S.mikro ? 'mit' : 'ohne'} Ton) …`.replace('  ', ' '));
 }
 
@@ -788,7 +961,7 @@ async function aufnahmeBeenden() {
   const fps = Math.round(Math.max(f1.length, f2.length) / Math.max(dauer, 0.001));
   takeSetzen(neuerTake({
     quelle: 'kamera', name: S.dateiName, fps, dauer, frames: f1, aspect: aspekte[0],
-    zweite: zweitePerson ? { frames: f2, aspect: aspekte[1] } : null, ansichten: a.zweite === 'winkel' ? 2 : 1,
+    zweite: zweitePerson ? { frames: f2, aspect: aspekte[1] } : null, ansichten: a.zweite === 'winkel' && a.verschmelzen ? 2 : 1,
   }), mitVideo);
   ui.btnAnalyse.disabled = !mitVideo[0];
   const posen = zweitePerson ? `${f1.length} + ${f2.length} Posen` : `${f1.length} Posen`;
@@ -806,7 +979,7 @@ function springe(v, t) {
 }
 
 function bedienungSperren(gesperrt) {
-  for (const el of [ui.btnKamera, ui.dateiVideo, ui.dateiJson, ui.selModell, ui.selFps, ui.btnEinmessen, ui.btnFarbeA, ui.btnFarbeB, ui.selZweite]) {
+  for (const el of [ui.btnKamera, ui.dateiVideo, ui.dateiJson, ui.selModell, ui.selFps, ui.btnEinmessen, ui.btnFarbeA, ui.btnFarbeB, ui.selFigur2, P1.selAufgabe, P2.selAufgabe]) {
     el.disabled = gesperrt;
   }
   ui.lblVideo.classList.toggle('gesperrt', gesperrt);
@@ -817,10 +990,12 @@ async function analysieren() {
   if (S.analyse) { S.analyse.abbrechen = true; return; }
   if (!analysierbar(P1)) { status('Analysieren geht nur mit einem Video (Datei oder Kamera-Aufnahme).'); return; }
   const quellen = P2.aktiv && analysierbar(P2) ? [P1, P2] : [P1];
-  const zweite = quellen.length > 1 ? ui.selZweite.value : null;
+  const zweite = quellen.length > 1 ? zweiteModus() : null;
   if (S.einmessen) einmessenBeenden();
   klickModusSetzen(null);
-  const det = await Promise.all(quellen.map(detektor));
+  const det = await Promise.all(quellen.map(p => (koerperAn(p) ? detektor(p) : null)));
+  const ges = await Promise.all(quellen.map(p => (gesichtAn(p) ? gesichtErkennung(p) : null)));
+  ges.forEach(g => g?.reset());
   for (const p of P) p.token++;
   takeEntfernen();
   if (zweite) S.zweite = zweite;
@@ -839,6 +1014,10 @@ async function analysieren() {
 
   const fps = +ui.selFps.value, dauer = P1.video.duration, n = Math.max(1, Math.round(dauer * fps));
   const filter = P.map(() => new PoseFilter(staerke())), extras = P.map(() => new ExtraFilter(staerke()));
+  const gFilter = P.map(() => new GesichtFilter(staerke()));
+  const verschmelzen = zweite === 'winkel' && quellen.length > 1 && koerperAn(P1) && koerperAn(P2);
+  for (const p of P) { p.kandidat = null; p.letzterRig = null; }
+  let mitGesicht = 0;
   const aspekte = P.map(seitenverhaeltnis);
   const frames = [[], []];
   const verschmelzer = new Verschmelzer();
@@ -849,28 +1028,52 @@ async function analysieren() {
     const t = Math.min(dauer - 0.001, i / fps);
     await Promise.all(quellen.map(p => springe(p.video, Math.min(p.video.duration - 0.001, t))));
     if (ctl.abbrechen) break;
+    const gesichter = [];
     const erkannt = quellen.map((p, k) => {
       if (t > p.video.duration) return null;   // das zweite Video ist etwas kürzer
-      const f = det[k].detect(p.video, t * 1000);
+      const f = det[k] ? det[k].detect(p.video, t * 1000) : null;
+      const e = ges[k] ? ges[k].detect(p.video, t * 1000, f?.q) : null;
       markerSuchen(p, f);
-      zeichneOverlay(p, f?.q, f);
+      zeichneOverlay(p, f?.q, f, e);
+      gesichter.push([p, e?.gesicht]);
       return f;
     });
     let liste;
-    if (zweite === 'winkel') {
+    const koerper = quellen.map(koerperAn);
+    if (verschmelzen) {
       verschmelzer.bild(1, erkannt[1], t);
       liste = [[P1, verschmelzer.bild(0, erkannt[0], t)]];
       if (verschmelzer.verschmolzen) verschmolzen++;
     } else {
-      liste = quellen.map((p, k) => [p, erkannt[k]]);
+      // jede Körper-Kamera liefert ihrer Figur; zwei für dieselbe Figur ohne Verschmelzen: die erste, die jemanden sieht
+      liste = [];
+      for (const [k, p] of quellen.entries()) {
+        const o = zweite === 'person' ? p : P1;
+        if (koerper[k] && erkannt[k] && !liste.some(([x]) => x === o)) liste.push([o, erkannt[k]]);
+      }
     }
-    for (const [p, f] of liste) {
-      if (!f) continue;
-      frames[p.nr].push(bildDaten(t, f));
-      const roh = markerAuswerten(f, aspekte[p.nr], rolle(p), p.figur.instrumente.greiftLinks(), p.kitBild);
-      p.figur.setPose(buildRig(filter[p.nr].apply(f.p, t), rigOpts()), extras[p.nr].apply(roh, t));
+    // Gesichter: je Figur das größte (alle Bilder dieser Zeit sind gleichzeitig)
+    for (const [p, g] of gesichter) gesichtMelden(zweite === 'person' ? p : P1, p, g, t, verschmelzer);
+    const besitzerListe = zweite === 'person' ? quellen : [P1];
+    for (const o of besitzerListe) {
+      const g = o.kandidat?.t === t ? o.kandidat.g : undefined;   // nur ein Gesicht aus genau diesem Bild
+      const f = liste.find(([x]) => x === o)?.[1];
+      if (f) {
+        frames[o.nr].push(bildDaten(t, f, g));
+        const roh = markerAuswerten(f, aspekte[o.nr], rolle(o), o.figur.instrumente.greiftLinks(), o.kitBild);
+        o.letzterRig = buildRig(filter[o.nr].apply(f.p, t), rigOpts());
+        o.figur.setPose(o.letzterRig, extras[o.nr].apply(roh, t));
+      } else if (g && !quellen.some((q, k) => koerper[k] && (zweite === 'person' ? q === o : true))) {
+        frames[o.nr].push({ t: r3(t), g });   // Figur ohne Körper-Kamera: nur das Gesicht
+        if (!o.letzterRig) o.figur.setPose(restPose(rigOpts()));
+      }
+      if (g) mitGesicht++;
+      o.figur.setMimik(mimik(gFilter[o.nr].apply(g, t), gesichtsNamen(), o.gesichtVon?.neutral.werte));
     }
-    if (i % 4 === 0) status(`Analyse: ${Math.round((i / n) * 100)} % · ${frames[0].length}${zweite === 'person' ? ` + ${frames[1].length}` : ''} Posen erkannt`);
+    if (i % 4 === 0) {
+      status(`Analyse: ${Math.round((i / n) * 100)} % · ${frames[0].length}${zweite === 'person' ? ` + ${frames[1].length}` : ''} Bilder erkannt` +
+        (ges.some(Boolean) ? `, ${mitGesicht} mit Gesicht` : ''));
+    }
   }
 
   S.analyse = null;
@@ -878,7 +1081,7 @@ async function analysieren() {
   bedienungSperren(false);
   if (ctl.verwerfen) return;
   if (!frames[0].length && !frames[1].length) {
-    status('In diesem Video wurde keine Person erkannt.');
+    status('In diesem Video wurde weder Körper noch Gesicht erkannt.');
     P1.video.controls = S.quelle === 'datei';
     liveStarten(P1);
     return;
@@ -886,29 +1089,44 @@ async function analysieren() {
   const quelle = S.quelle === 'kamera' ? 'kamera' : 'video';
   takeSetzen(neuerTake({
     quelle, name: S.dateiName, fps, dauer, frames: frames[0], aspect: aspekte[0],
-    zweite: zweite === 'person' ? { frames: frames[1], aspect: aspekte[1] } : null, ansichten: zweite === 'winkel' ? 2 : 1,
+    zweite: zweite === 'person' ? { frames: frames[1], aspect: aspekte[1] } : null, ansichten: verschmelzen ? 2 : 1,
   }), [true, quellen.length > 1]);
   const sek = ((performance.now() - start) / 1000).toFixed(0);
   const mitMarkern = frames[0].filter(f => f.m || f.mb).length;
-  const personen = zweite === 'person' ? `${frames[0].length} + ${frames[1].length} Posen` : `${frames[0].length} Posen`;
-  status(`${ctl.abbrechen ? 'Abgebrochen' : 'Fertig'}: ${personen} aus ${n + 1} Bildern` +
-    (zweite === 'winkel' ? `, davon ${verschmolzen} aus beiden Winkeln verschmolzen` : '') +
+  const personen = zweite === 'person' ? `${frames[0].length} + ${frames[1].length} Bilder` : `${frames[0].length} Bilder`;
+  status(`${ctl.abbrechen ? 'Abgebrochen' : 'Fertig'}: ${personen} aus ${n + 1} erkannt` +
+    (ges.some(Boolean) ? `, ${mitGesicht} mit Gesicht` : '') +
+    (verschmelzen ? `, davon ${verschmolzen} aus beiden Winkeln verschmolzen` : '') +
     (ui.chkMarker.checked ? `, in ${mitMarkern} Bildern Marker` : '') + ` (${sek} s). Abspielen mit ▶ oder Leertaste.`);
 }
 
 // ---------- Fertige Aufnahme (Take) ----------
 const instrumentDaten = p => ({
-  rolle: rolle(p),
+  rolle: p.selRolle.value,   // auch bei ausgeschalteten Band-Funktionen merken
   hand: p.selHand.value,
   kit: { ...p.figur.instrumente.kalib },
   kitBild: { ...p.kitBild },
 });
 
 // zweite: { frames, aspect } einer zweiten Person; ansichten = 2: frames sind aus zwei Winkeln verschmolzen
+// Gesicht einer Figur für die Aufnahme: Namen der Blendshapes und Ruhegesicht (gemerkt oder aus der Aufnahme)
+function gesichtDaten(o, frames) {
+  const namen = gesichtsNamen();
+  if (!namen || !frames.some(f => f.g)) { for (const f of frames) delete f.g; return null; }
+  const quelle = o.gesichtVon;
+  return {
+    modell: 'mediapipe-face-landmarker',
+    namen,
+    neutral: quelle?.neutral.fest ? quelle.neutral.werte.map(v => Math.round(v * 100) / 100) : neutralAusFrames(frames),
+  };
+}
+
 function neuerTake({ quelle, name, fps, dauer, frames, aspect, zweite = null, ansichten = 1 }) {
+  // Bilder ohne Körper und ohne Gesicht braucht niemand
+  frames = frames.filter(f => f.p || f.g);
   const take = {
     format: FORMAT,
-    version: 2,
+    version: 3,
     erstellt: new Date().toISOString(),
     name,
     quelle,
@@ -922,14 +1140,31 @@ function neuerTake({ quelle, name, fps, dauer, frames, aspect, zweite = null, an
       '(x rechts, y unten, z negativ = zur Kamera); q = 33 Bildpunkte [x, y] von 0 bis 1; ' +
       'm / mb = gefundene Tape-Marker [x, y, Fläche] in Farbe a (Kopf/Sticks) / b (Becken); ' +
       'ansichten = 2: p aus zwei Kamerawinkeln verschmolzen, q2 = Bildpunkte der zweiten Kamera; ' +
+      'p und q fehlen, wenn kein Körper erkannt wurde (Nahaufnahme); ' +
+      'g = Gesicht { b: Blendshapes 0..1 in der Reihenfolge von gesicht.namen (ARKit-Namen, Left = linke Seite der Person), ' +
+      'r: Kopfdrehung als Quaternion [x, y, z, w] (x = linke Seite der Person, y oben, z zur Kamera), k: Gesichtsrahmen [x, y, Breite, Höhe] 0..1 }; ' +
+      'gesicht.neutral = Ruhegesicht (Blendshapes), wird beim Übertragen abgezogen; ' +
       'zweite = zweite Person mit eigener Kamera (gleicher Aufbau)',
     frames,
   };
+  const g1 = gesichtDaten(P1, frames);
+  if (g1) take.gesicht = g1;
   if (ansichten > 1) take.ansichten = ansichten;
   if (zweite) {
-    take.zweite = { seitenverhaeltnis: r4(zweite.aspect), instrument: instrumentDaten(P2), frames: zweite.frames };
+    const f2 = zweite.frames.filter(f => f.p || f.g);
+    take.zweite = { seitenverhaeltnis: r4(zweite.aspect), instrument: instrumentDaten(P2), frames: f2 };
+    const g2 = gesichtDaten(P2, f2);
+    if (g2) take.zweite.gesicht = g2;
   }
   return take;
+}
+
+// Gesicht zwischen zwei Bildern überblenden (Blendshapes linear, Drehung über die kürzere Richtung)
+function gesichtMischen(A, B, k) {
+  if (!A || !B) return k < 0.5 ? (A ?? B) : (B ?? A);
+  const vz = A.r.reduce((s, v, i) => s + v * B.r[i], 0) < 0 ? -1 : 1;
+  const r = A.r.map((v, i) => v + (vz * B.r[i] - v) * k), l = Math.hypot(...r) || 1;
+  return { b: A.b.map((v, i) => v + (B.b[i] - v) * k), r: r.map(v => v / l) };
 }
 
 function posenBerechnen(p) {
@@ -937,15 +1172,20 @@ function posenBerechnen(p) {
   const d = takeDaten(p);
   p.posen = p.extras = p.rohExtras = null;
   if (d && hatFigur(p)) {
-    const filter = new PoseFilter(staerke());
-    p.posen = d.frames.map(f => ({ t: f.t, p: filter.apply(f.p, f.t) }));
+    const filter = new PoseFilter(staerke()), gFilter = new GesichtFilter(staerke());
+    let letzte = null;   // ohne Körper bleibt die letzte Haltung stehen (am Anfang: Grundhaltung)
+    p.posen = d.frames.map(f => {
+      if (f.p) letzte = filter.apply(f.p, f.t);
+      return { t: f.t, p: letzte, g: d.gesicht ? gFilter.apply(f.g, f.t) : null };
+    });
     // Blickrichtung, Sitzhöhe und Greifhand einmal aus der ganzen Aufnahme
-    p.figur.setAnker(ankerBerechnen(p.posen.map(f => buildRig(f.p, rigOpts()))));
+    const mitKoerper = p.posen.filter(f => f.p);
+    p.figur.setAnker(mitKoerper.length ? ankerBerechnen(mitKoerper.map(f => buildRig(f.p, rigOpts()))) : null);
     // Marker: Hals- und Stickrichtungen, Beckenbewegung
     const r = rolle(p), aspect = d.seitenverhaeltnis ?? 16 / 9;
     if (r && d.frames.some(f => f.m || f.mb)) {
       const ruhe = beckenRuhe(d.frames, p.kitBild, aspect), greifLinks = p.figur.instrumente.greiftLinks();
-      p.rohExtras = d.frames.map(f => markerAuswerten(f, aspect, r, greifLinks, ruhe));
+      p.rohExtras = d.frames.map(f => (f.p ? markerAuswerten(f, aspect, r, greifLinks, ruhe) : null));
       const ef = new ExtraFilter(staerke());
       p.extras = p.rohExtras.map((e, i) => ef.apply(e, d.frames[i].t));
     }
@@ -966,11 +1206,13 @@ function instrumentSetzen(p) {
 
 // mitVideo: [erste, zweite] – gibt es zu dieser Kamera ein Video?
 function takeSetzen(take, mitVideo = [false, false]) {
+  // ältere Aufnahmen mit Gesicht, aber ohne Ruhegesicht: aus der Aufnahme selbst schätzen
+  for (const d of [take, take.zweite]) if (d?.gesicht && !d.gesicht.neutral) d.gesicht.neutral = neutralAusFrames(d.frames);
   S.take = take;
   S.mode = 'take';
   S.zweite = take.zweite ? 'person' : 'winkel';
   P2.aktiv = !!take.zweite || ((take.ansichten ?? 1) > 1 && !!mitVideo[1]);
-  if (P2.aktiv) ui.selZweite.value = S.zweite;
+  if (P2.aktiv) ui.selFigur2.value = S.zweite === 'person' ? '1' : '0';
   P.forEach((p, i) => { p.mitVideo = p.aktiv && !!mitVideo[i]; });
   for (const p of P) {
     const d = takeDaten(p);
@@ -1009,13 +1251,17 @@ function poseBei(p, t) {
   const L = p.posen;
   if (!L?.length) return null;
   let lo = 0, hi = L.length - 1;
-  if (t <= L[lo].t) return { p: L[lo].p, i: lo };
-  if (t >= L[hi].t) return { p: L[hi].p, i: hi };
+  if (t <= L[lo].t) return { p: L[lo].p, g: L[lo].g, i: lo };
+  if (t >= L[hi].t) return { p: L[hi].p, g: L[hi].g, i: hi };
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (L[m].t <= t) lo = m; else hi = m; }
   const A = L[lo], B = L[hi], spanne = B.t - A.t, k = (t - A.t) / (spanne || 1);
   const i = k < 0.5 ? lo : hi;
-  if (spanne > 0.25) return { p: L[i].p, i };   // Lücke in der Erkennung: nicht darüber hinweg überblenden
-  return { p: A.p.map((pa, j) => { const pb = B.p[j]; return [pa[0] + (pb[0] - pa[0]) * k, pa[1] + (pb[1] - pa[1]) * k, pa[2] + (pb[2] - pa[2]) * k, pa[3]]; }), i };
+  if (spanne > 0.25) return { p: L[i].p, g: L[i].g, i };   // Lücke in der Erkennung: nicht darüber hinweg überblenden
+  return {
+    p: A.p && B.p ? A.p.map((pa, j) => { const pb = B.p[j]; return [pa[0] + (pb[0] - pa[0]) * k, pa[1] + (pb[1] - pa[1]) * k, pa[2] + (pb[2] - pa[2]) * k, pa[3]]; }) : L[i].p,
+    g: gesichtMischen(A.g, B.g, k),
+    i,
+  };
 }
 
 function takeZeit() {
@@ -1071,8 +1317,11 @@ studio.beiBild = () => {
     }
     const r = poseBei(p, t);
     if (r) {
-      p.figur.setPose(buildRig(r.p, rigOpts()), p.extras?.[r.i] ?? null);
-      if (p.mitVideo) { const f = takeDaten(p).frames[r.i]; zeichneOverlay(p, f.q, f); }
+      const d = takeDaten(p);
+      p.figur.setPose(r.p ? buildRig(r.p, rigOpts()) : restPose(rigOpts()), p.extras?.[r.i] ?? null);
+      p.figur.setMimik(d.gesicht ? mimik(r.g, d.gesicht.namen, d.gesicht.neutral) : null);
+      p.takeGesicht = r.g;
+      if (p.mitVideo) { const f = d.frames[r.i]; zeichneOverlay(p, f.q, f, f.g ? { gesicht: f.g } : null); }
     }
     // Luftband: alle Töne spielen, die seit dem letzten Bild dran waren (nicht beim Springen)
     if (p.toene) {
@@ -1108,7 +1357,7 @@ function videoKoordinaten(p, e) {
   let u = (e.clientX - r.left - (r.width - w) / 2) / w;
   const vv = (e.clientY - r.top - (r.height - h) / 2) / h;
   if (u < 0 || u > 1 || vv < 0 || vv > 1) return null;
-  if (ui.chkSpiegeln.checked) u = 1 - u;
+  if (p.chkSpiegeln.checked) u = 1 - u;
   return [u, vv];
 }
 
@@ -1295,6 +1544,7 @@ function toeneBerechnen(p) {
     lb.setEmpfindlichkeit(+ui.rngEmpfindlich.value);
     const filter = luftFilter(), extras = luftExtraFilter();
     d.frames.forEach((f, i) => {
+      if (!f.p) { zonen.push(null); return; }   // nur Gesicht: kein Ton
       const j = buildRig(filter.apply(f.p, f.t), rigOpts());
       ins.update(j, p.rohExtras ? extras.apply(p.rohExtras[i], f.t) : null, false);
       const r = lb.schritt(f.t, ins.messpunkte(j), fuesseSichtbar(f.p));
@@ -1384,6 +1634,7 @@ async function importieren(datei) {
   try {
     const take = JSON.parse(await datei.text());
     if (take.format !== FORMAT || !Array.isArray(take.frames) || !(take.frames.length || take.zweite?.frames?.length)) {
+      // (Bilder dürfen nur ein Gesicht enthalten; Version 1 und 2 laden weiter)
       throw new Error('keine Bewegungsdatei aus diesem Studio');
     }
     stoppeAlles();
@@ -1394,7 +1645,8 @@ async function importieren(datei) {
     ui.btnAufnahme.disabled = ui.btnAnalyse.disabled = true;
     for (const p of P) zeigeVideo(p, false, 'Zu dieser Bewegungsdatei gibt es kein Video.');
     takeSetzen(take, [false, false]);
-    const posen = take.zweite ? `${take.frames.length} + ${take.zweite.frames.length} Posen (zwei Personen)` : `${take.frames.length} Posen`;
+    const posen = (take.zweite ? `${take.frames.length} + ${take.zweite.frames.length} Bilder (zwei Personen)` : `${take.frames.length} Bilder`) +
+      (take.gesicht || take.zweite?.gesicht ? ' mit Gesicht' : '');
     status(`${datei.name}: ${zeitText(take.duration)}, ${posen} geladen.`);
   } catch (err) {
     status('Import fehlgeschlagen: ' + err.message);
@@ -1403,18 +1655,83 @@ async function importieren(datei) {
 
 // ---------- Bedienung ----------
 farbfelder();
-S.zweite = gemerkt(MODUS_SPEICHER) || 'winkel';
-ui.selZweite.value = S.zweite;
+S.zweite = zweiteModus();
 ui.btnKamera.onclick = kameraStarten;
 ui.btnKamera2.onclick = zweiteKameraUmschalten;
-ui.selZweite.onchange = zweiteModusWechseln;
+
+// ---------- Einstellungen (rechte Spalte mit Reitern) ----------
+function einstellungenZeigen(an) {
+  ui.einstellungen.hidden = !an;
+  ui.buehne.classList.toggle('mitEinstellungen', an);
+  ui.btnEinstellungen.setAttribute('aria-expanded', String(an));
+  merken('strichfiguren-einstellungen-offen', an ? '1' : '');
+}
+function reiterZeigen(name) {
+  document.querySelectorAll('[data-reiter]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.reiter === name)));
+  document.querySelectorAll('[data-seite]').forEach(s => { s.hidden = s.dataset.seite !== name; });
+  merken('strichfiguren-reiter', name);
+}
+ui.btnEinstellungen.onclick = () => einstellungenZeigen(ui.einstellungen.hidden);
+ui.btnEinstellungenZu.onclick = () => einstellungenZeigen(false);
+document.querySelectorAll('[data-reiter]').forEach(b => { b.onclick = () => reiterZeigen(b.dataset.reiter); });
+reiterZeigen(gemerkt('strichfiguren-reiter') || 'kamera');
+einstellungenZeigen(!!gemerkt('strichfiguren-einstellungen-offen'));
+
+// Band-Funktionen: an einer Stelle an- und ausschalten
+function bandUmschalten() {
+  merken(BAND_SPEICHER, bandAn() ? '1' : '');
+  ui.bandBereich.hidden = !bandAn();
+  ui.bandAus.hidden = bandAn();
+  if (!bandAn()) { if (S.einmessen) einmessenBeenden(); klickModusSetzen(null); }
+  for (const p of P) instrumentSetzen(p);
+  if (S.mode !== 'live') for (const p of P) zeichneOverlay(p, p.letzteErkennung?.q ?? null, null);
+  status(bandAn() ? 'Band-Funktionen an: Instrumente, Tape-Marker und Luftband unter Einstellungen → Band.' : 'Band-Funktionen aus.');
+}
+ui.chkBand.checked = !!gemerkt(BAND_SPEICHER);
+ui.bandBereich.hidden = !bandAn();
+ui.bandAus.hidden = bandAn();
+ui.chkBand.onchange = bandUmschalten;
+
+// Kamera-Einstellungen: Aufgabe, Figur, Spiegeln, Ruhegesicht – gemerkt je Gerät
+for (const p of P) {
+  p.selAufgabe.onchange = () => kameraAufgabeGeaendert(p);
+  p.chkSpiegeln.onchange = () => { spiegeln(); if (p.stream) geraetEinstellungenSpeichern(p); };
+  p.btnNeutral.onclick = () => neutralMerken(p);
+  p.btnNeutral.ondblclick = () => {
+    p.neutral.reset();
+    neutralAnzeigen(p);
+    if (p.stream) geraetEinstellungenSpeichern(p);
+    status(`Ruhegesicht von Kamera ${p.nr + 1} wird wieder automatisch geschätzt.`);
+  };
+}
+ui.selFigur2.onchange = () => kameraAufgabeGeaendert(P2);
+
+// Neutral merken: live das aktuelle Gesicht dieser Kamera, in einer Aufnahme das Gesicht an der aktuellen Stelle
+function neutralMerken(p) {
+  const o = besitzer(p), d = takeDaten(o);
+  if (S.mode === 'take' && d?.gesicht) {
+    if (!o.takeGesicht) { status('An dieser Stelle der Aufnahme ist kein Gesicht.'); return; }
+    d.gesicht.neutral = o.takeGesicht.b.map(v => Math.round(v * 100) / 100);
+    status(`Ruhegesicht für Figur ${o.nr + 1} dieser Aufnahme gemerkt (wird mit exportiert).`);
+    return;
+  }
+  const k = o.kandidat;
+  if (!k || k.p !== p || performance.now() / 1000 - k.t > 1) {
+    status(`Kamera ${p.nr + 1} sieht gerade kein Gesicht. Kamera starten, entspannt hineinschauen und noch einmal klicken.`);
+    return;
+  }
+  p.neutral.merken(o.liveGesichtFilter.letztes?.b ?? k.g.b);
+  neutralAnzeigen(p);
+  if (p.stream) geraetEinstellungenSpeichern(p);
+  status(`Ruhegesicht für ${kameraName(p)} gemerkt. Ab jetzt zählt nur, was davon abweicht.`);
+}
+ui.rngMimik.oninput = () => { if (S.mode === 'take') studio.beiBild?.(); };
 for (const p of P) p.selKamera.onchange = () => kameraWechseln(p);
 navigator.mediaDevices?.addEventListener?.('devicechange', kamerasAuflisten);   // iPhone kommt oder geht
 kamerasAuflisten();
 ui.dateiVideo.onchange = () => { const f = ui.dateiVideo.files[0]; ui.dateiVideo.value = ''; if (f) videoOeffnen(f); };
 ui.btnAufnahme.onclick = aufnahmeUmschalten;
 ui.btnAnalyse.onclick = analysieren;
-ui.chkSpiegeln.onchange = spiegeln;
 ui.selModell.onchange = () => {
   if (S.mode === 'live') for (const p of P.filter(q => q.aktiv)) detektor(p).catch(err => status('Modell nicht geladen: ' + err.message));
 };
@@ -1444,6 +1761,7 @@ for (const p of P) p.selRolle.onchange = p.selHand.onchange = () => instrumentSe
 ui.rngGlaettung.oninput = () => {
   for (const p of P) {
     p.liveFilter.setStaerke(staerke());
+    p.liveGesichtFilter.setStaerke(staerke());
     p.liveExtras = new ExtraFilter(staerke());
   }
   posenBerechnen();
@@ -1475,6 +1793,7 @@ addEventListener('keydown', e => {
 
 // Zum Ausprobieren in der Browser-Konsole
 window.studio = {
-  S, P, studio, sucher, klang, takeSetzen, neuerTake, detektor, liveStarten, liveBild, posenBerechnen, kitGeaendert,
+  S, P, studio, sucher, klang, takeSetzen, neuerTake, detektor, gesichtErkennung, mimik, liveStarten, liveBild, posenBerechnen, kitGeaendert,
+  geraetEinstellungenLaden, geraetEinstellungenSpeichern,
   toeneBerechnen, midiErzeugen, tonspurRendern, ansichtAnpassen, Verschmelzer, kamerasPruefen, zweiteWiederAus,
 };

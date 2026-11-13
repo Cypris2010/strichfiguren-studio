@@ -1,6 +1,6 @@
 # Strichfiguren-Studio
 
-Video oder Kamera → Körperpunkte (MediaPipe Pose) → 3D-Strichmännchen (three.js) → Bewegungsdatei (JSON).
+Video oder Kamera → Körperpunkte (MediaPipe Pose) und Gesicht (MediaPipe Face) → 3D-Strichmännchen mit Mimik (three.js) → Bewegungsdatei (JSON).
 Erste Stufe für ein Musikvideo mit Strichmännchen.
 
 ## Starten
@@ -11,7 +11,46 @@ cd ~/annimatin-test && python3 -m http.server 8123
 
 Dann http://localhost:8123 öffnen (Chrome empfohlen). Per `file://` geht es nicht, und die Kamera braucht `localhost` oder https.
 
-## Bedienung
+## Aufbau der Oberfläche
+
+- **Editor**: oben Quelle (*Kamera*, *+ 2. Kamera*, *Video öffnen*), *Aufnahme* und *Analysieren*; links die Videos,
+  rechts die Figur mit den Ansichten (*Vorne*, *Seite*, *Schräg*, *Oben*, *Kopf*) und dem Stil; unten die Zeitleiste.
+  Im Video steht als Etikett, was die Kamera auswertet und für welche Figur.
+- **⚙ Einstellungen** (rechts oben) klappt eine Spalte mit drei Reitern auf. Videos und Figur bleiben dabei
+  sichtbar und anklickbar (wichtig fürs Einmessen und die Tape-Farben).
+  - **Kamera** – je Kamera: Gerät, **Aufgabe** (*Körper + Gesicht*, *Nur Körper*, *Nur Gesicht*), bei der zweiten
+    die **Figur**, *Spiegeln* und *Neutral merken*. **Das alles merkt sich das Studio je Gerät** – z. B. iPhone als
+    Gesichtskamera ohne Spiegeln, Mac-Kamera für den Körper gespiegelt. Beim nächsten Start ist alles wieder so.
+  - **Auswertung** – Modell, Bilder pro Sekunde für *Analysieren*, Glättung, Füße am Boden, Stärke der Mimik.
+  - **Band** – standardmäßig aus. Ein Schalter aktiviert Instrumente, Tape-Marker, Schlagzeug einmessen und das
+    Luftband mit Tonspur- und MIDI-Export. Solange er aus ist, taucht davon nichts im Editor auf.
+
+### Was die Kameras auswerten
+
+| Kamera 1 | Kamera 2 | Ergebnis |
+| --- | --- | --- |
+| Körper + Gesicht | – | eine Figur mit Mimik |
+| Nur Gesicht | – | Nahaufnahme: die Figur steht, nur Mimik und Kopf bewegen sich |
+| Körper, Figur 1 | Gesicht, Figur 1 | Körper aus der Totalen, Mimik aus der Nahaufnahme (z. B. Gesang) |
+| Körper, Figur 1 | Körper, Figur 1 | zwei Winkel derselben Person, zu einer genaueren Figur verschmolzen |
+| beliebig | beliebig, Figur 2 | zwei Personen mit je eigener Figur |
+
+Sehen zwei Kameras das Gesicht derselben Figur, zählt die, in der es größer ist. Bei zwei Winkeln wird die
+Kopfdrehung aus Kamera 2 in die Ausrichtung von Kamera 1 gedreht, sobald der Winkel bestimmt ist.
+
+### Gesicht
+
+Zwei MediaPipe-Modelle je Kamera: der **Face Detector** findet alle Gesichter (gestrichelte Rahmen), der
+**Face Landmarker** wertet einen vergrößerten Ausschnitt um den Kopf aus (478 Punkte, 52 Blendshapes). So klappt
+es auch bei Ganzkörperaufnahmen. Die Figur bekommt ein gezeichnetes Gesicht mit Augen, Brauen und Mund und dreht
+den Kopf mit. Die Mimik wird verstärkt (*Mimik* unter *Auswertung*), damit schon ein dezentes Lächeln sichtbar wird.
+
+**Neutral merken** (Reiter *Kamera*): entspannt in die Kamera schauen und klicken. MediaPipe meldet bei vielen schon
+im entspannten Gesicht gesenkte Brauen und Mundwinkel; ab dann zählt nur, was davon abweicht. Ohne Klick wird das
+Ruhegesicht automatisch geschätzt, Doppelklick schaltet zurück darauf. Bei einer Aufnahme merkt sich der Knopf das
+Gesicht an der aktuellen Stelle und speichert es im Export mit.
+
+## Bedienung im Einzelnen
 
 - **Kamera** – Live-Vorschau. **● Aufnahme** speichert die Bewegung zusammen mit Video und Ton.
   Sind mehrere Kameras da, erscheint daneben eine Auswahl; der Wechsel geht auch mitten im Live-Bild.
@@ -21,17 +60,19 @@ Dann http://localhost:8123 öffnen (Chrome empfohlen). Per `file://` geht es nic
   *Erkennung* (MediaPipe), *Rest* (Tape, Figur, Luftband), *3D* (Zeichnen), *Last* (Anteil der Rechenzeit) und
   wie viele Bilder pro Sekunde jede Kamera mit einer **2. Kamera** noch schaffen würde.
   Erkennt eine Kamera gerade niemanden, steht dort *keine Person erkannt*.
-- **+ 2. Kamera** – eine zweite Kamera dazunehmen (erst die erste mit *Kamera* starten). Daneben wählst du, wofür:
-  - *gleiche Figur (2. Winkel)*: Beide Kameras filmen dieselbe Person, am besten 45–90° auseinander und beide
+- **+ 2. Kamera** – eine zweite Kamera dazunehmen (erst die erste mit *Kamera* starten). Wofür, stellst du unter
+  *Einstellungen → Kamera* mit Aufgabe und Figur ein (siehe Tabelle oben):
+  - *Figur 1, Körper*: Beide Kameras filmen dieselbe Person, am besten 45–90° auseinander und beide
     mit dem ganzen Körper im Bild. Das Studio bestimmt selbst, wie die Kameras zueinander stehen (Anzeige
     *Winkel … °*), und verschmilzt beide Ansichten zu einer Figur: Was für die eine Kamera Tiefe ist (ungenau),
     sieht die andere von der Seite (genau). Sieht nur eine Kamera die Person, bewegt diese allein die Figur.
-  - *eigene Figur (2. Person)*: Die zweite Kamera filmt eine zweite Person. Sie bekommt eine eigene Figur
-    rechts daneben und ihr eigenes Instrument (*Person 2* in der Leiste der 3D-Ansicht).
+  - *Figur 1, Nur Gesicht*: Die zweite Kamera liefert nur die Mimik, am besten nah am Gesicht.
+  - *Figur 2*: Die zweite Kamera filmt eine zweite Person. Sie bekommt eine eigene Figur
+    rechts daneben und ihr eigenes Instrument (*Figur 2* unter *Einstellungen → Band*).
 
   **● Aufnahme** nimmt dann beide Kameras gleichzeitig auf (den Ton im ersten Video), **Analysieren** wertet
   beide Videos Bild für Bild im Gleichschritt aus, beim Abspielen laufen beide Videos synchron. Mit der
-  Auswahl lässt sich eine Aufnahme auch nachträglich anders auswerten: umstellen, dann *Analysieren*.
+  Einstellung lässt sich eine Aufnahme auch nachträglich anders auswerten: umstellen, dann *Analysieren*.
   **Zwei Kameras gleichzeitig gehen nur in Chrome.** Safari liefert nur von einer Kamera Bilder: Kommt die
   zweite dazu, bleibt das Bild der ersten stehen (mit Skelett und Figur). Das Studio merkt das, schaltet die
   zweite wieder ab und sagt Bescheid. Liefert eine Kamera keine Bilder mehr, steht oben *Bild steht*.
@@ -45,6 +86,8 @@ Dann http://localhost:8123 öffnen (Chrome empfohlen). Per `file://` geht es nic
 - **Glättung** – 0 = Rohdaten, 10 = sehr ruhig. Schnelle Bewegungen bleiben trotzdem erhalten (One-Euro-Filter).
 - **Instrument** – Gitarre, Bass oder Schlagzeug. Gitarre und Bass hängen vor dem Bauch, der Hals zeigt immer zur Greifhand. Das Schlagzeug steht fest vor der Figur, mit Hocker, Becken und Sticks in den Händen.
 - **Hand** – *automatisch* erkennt die Greifhand an der Gitarre: Es ist die Hand, die weiter seitlich vom Körper weg ist. *Linkshänder* spiegelt beim Schlagzeug den Aufbau. Bei einer fertigen Aufnahme werden Blickrichtung, Sitzhöhe und Greifhand einmal aus der ganzen Aufnahme bestimmt, damit nichts wackelt.
+
+Alles Folgende gehört zu den **Band-Funktionen** (*Einstellungen → Band*, erst einschalten).
 
 ## Instrumente mit Tape verfolgen
 
@@ -102,25 +145,28 @@ Für Schlagzeug lieber mit 60 Bildern pro Sekunde filmen und analysieren.
 | Datei | Aufgabe |
 | --- | --- |
 | `js/pose.js` | MediaPipe laden, 33 Punkte pro Bild erkennen |
-| `js/filter.js` | One-Euro-Filter gegen Zittern |
+| `js/face.js` | Gesichter finden, Kopfausschnitt, Blendshapes, Kopfdrehung, Ruhegesicht |
+| `js/filter.js` | One-Euro-Filter gegen Zittern (Körper, Marker, Gesicht) |
 | `js/rig.js` | Punkte → Strichmännchen mit festen Knochenlängen, Füße am Boden |
-| `js/scene.js` | three.js-Szene, Figuren (eine oder zwei), Stile, Kamera |
+| `js/scene.js` | three.js-Szene, Figuren (eine oder zwei) mit gezeichnetem Gesicht, Stile, Kamera |
 | `js/instrumente.js` | Gitarre, Bass, Schlagzeug und Sticks, an der Pose ausgerichtet; Einmessen |
 | `js/marker.js` | Tape-Marker im Bild finden, 2D → 3D (Hals, Sticks, Becken, Einmessen) |
 | `js/luftband.js` | Luftband: Schläge, Anschläge und Akkordzonen aus der Bewegung erkennen |
 | `js/klang.js` | Klangerzeugung (Schlagzeug, Gitarre, Bass) live und als WAV-Tonspur |
 | `js/midi.js` | Luftband-Töne als MIDI-Datei, eine Spur je Person |
 | `js/ansichten.js` | Zwei Kamerawinkel einer Person: Winkel bestimmen, beide Posen verschmelzen |
-| `js/app.js` | Bedienung, Kamera-Auswahl, zweite Kamera, Aufnahme, Analyse, Abspielen, Export |
+| `js/app.js` | Bedienung, Einstellungen je Gerät, zweite Kamera, Aufnahme, Analyse, Abspielen, Export |
 
 Die JSON-Datei enthält die **Rohdaten** (Welt- und Bildpunkte je Bild). Glättung und Übertragung auf die Figur passieren beim Abspielen. So lassen sich alte Aufnahmen später mit besseren Verfahren neu verarbeiten.
 Bei zwei Personen steht die zweite unter `zweite` (gleicher Aufbau). Bei zwei Winkeln sind die Punkte schon
 verschmolzen (`ansichten: 2`), dazu die Bildpunkte der zweiten Kamera als `q2`.
+Ab Version 3 hat jedes Bild optional `g` (Blendshapes, Kopfdrehung, Gesichtsrahmen) und jede Figur unter `gesicht`
+die Namen der Blendshapes und das Ruhegesicht. Bilder aus Nahaufnahmen haben nur `g`, kein `p`/`q`.
 
 ## Noch nicht drin
 
 - Bewegung durch den Raum: die Figur bleibt an ihrem Platz
-- Finger und Mimik (MediaPipe Hands / Face)
+- Finger (MediaPipe Hands)
 - Ohne Tape folgen die Sticks nur der Hand und treffen die Trommeln nicht exakt
 - Luftband: keine echten Griffe, nur vier Akkordzonen; ein Instrument je Person
 - Mehr als zwei Kameras; zwei Winkel *und* zwei Personen gleichzeitig; Kameras, die die Person von hinten sehen
