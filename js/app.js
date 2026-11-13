@@ -39,7 +39,7 @@ const ui = {
   chkMarker: $('chkMarker'), btnFarbeA: $('btnFarbeA'), btnFarbeB: $('btnFarbeB'), feldA: $('feldA'), feldB: $('feldB'),
   rngToleranz: $('rngToleranz'), btnEinmessen: $('btnEinmessen'), btnKitZurueck: $('btnKitZurueck'),
   rolleText: $('rolleText'), zweitesInstrument: $('zweitesInstrument'),
-  chkDrehen: $('chkDrehen'), selStil: $('selStil'), rngGlaettung: $('rngGlaettung'), chkBoden: $('chkBoden'),
+  chkDrehen: $('chkDrehen'), selStil: $('selStil'), selForm: $('selForm'), selHaltung: $('selHaltung'), rngGlaettung: $('rngGlaettung'), chkBoden: $('chkBoden'),
   btnPlay: $('btnPlay'), rngZeit: $('rngZeit'), zeit: $('zeit'), btnExport: $('btnExport'), dateiJson: $('dateiJson'),
   chkLuftband: $('chkLuftband'), selAkkorde: $('selAkkorde'), selKlang: $('selKlang'), rngEmpfindlich: $('rngEmpfindlich'),
   btnTonspur: $('btnTonspur'), btnMidi: $('btnMidi'),
@@ -107,7 +107,7 @@ const S = {
   einmessen: null,
 };
 
-const rigOpts = () => ({ boden: ui.chkBoden.checked });
+const rigOpts = () => ({ boden: ui.chkBoden.checked, sitzen: ui.selHaltung.value === 'sitzen' });
 const status = text => { ui.status.textContent = text; ui.status.title = text; };
 const r3 = v => Math.round(v * 1000) / 1000;
 const r4 = v => Math.round(v * 1e4) / 1e4;
@@ -147,6 +147,7 @@ const KAMERA_SPEICHER = ['strichfiguren-kamera', 'strichfiguren-kamera2'];
 const GERAETE_SPEICHER = 'strichfiguren-geraete';   // Einstellungen je Kamera-Gerät
 const BAND_SPEICHER = 'strichfiguren-band';
 
+ui.selHaltung.value = gemerkt('strichfiguren-haltung') || 'stehen';   // vor der ersten Pose
 for (const p of P) p.figur.setPose(restPose(rigOpts()));
 
 // ---------- Erkennungsmodell (eins je Kamera: MediaPipe verfolgt die Person von Bild zu Bild) ----------
@@ -1757,10 +1758,16 @@ for (const p of P) {
 
 ui.chkDrehen.onchange = () => studio.setDrehen(ui.chkDrehen.checked);
 ui.selStil.onchange = () => studio.setStil(ui.selStil.value);
+// Aussehen der Figuren (Strichmännchen oder Knetfigur), gemerkt im Browser
+ui.selForm.value = gemerkt('strichfiguren-form') || 'strich';
+studio.setForm(ui.selForm.value);
+ui.selForm.onchange = () => { studio.setForm(ui.selForm.value); merken('strichfiguren-form', ui.selForm.value); };
 ui.chkBoden.onchange = () => {
   if (S.mode === 'idle') for (const p of P) p.figur.setPose(restPose(rigOpts()));
   else posenBerechnen();
 };
+// Haltung: Sitzen = Beine fest, nur der Oberkörper aus dem Video; gemerkt im Browser
+ui.selHaltung.onchange = () => { merken('strichfiguren-haltung', ui.selHaltung.value); ui.chkBoden.onchange(); };
 for (const p of P) p.selRolle.onchange = p.selHand.onchange = () => instrumentSetzen(p);
 ui.rngGlaettung.oninput = () => {
   for (const p of P) {

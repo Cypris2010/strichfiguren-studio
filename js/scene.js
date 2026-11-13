@@ -32,6 +32,56 @@ const SEGMENTE = [
 ];
 const KOPF_RADIUS = 0.115;
 
+// Knetfigur: dicke, runde Glieder in mehreren Farben. [von, nach, Radius am Anfang, Radius am Ende, Teil]
+const KNET_SEGMENTE = [
+  ['pelvis', 'chest', 0.15, 0.135, 'shirt'], ['chest', 'headC', 0.06, 0.06, 'haut'],
+  ['chest', 'lSh', 0.12, 0.085, 'shirt'], ['chest', 'rSh', 0.12, 0.085, 'shirt'],
+  ['lSh', 'lEl', 0.08, 0.066, 'shirt'], ['lEl', 'lWr', 0.058, 0.048, 'haut'], ['lWr', 'lIdx', 0.05, 0.06, 'haut'],
+  ['rSh', 'rEl', 0.08, 0.066, 'shirt'], ['rEl', 'rWr', 0.058, 0.048, 'haut'], ['rWr', 'rIdx', 0.05, 0.06, 'haut'],
+  ['pelvis', 'lHip', 0.12, 0.1, 'hose'], ['pelvis', 'rHip', 0.12, 0.1, 'hose'],
+  ['lHip', 'lKn', 0.098, 0.082, 'hose'], ['lKn', 'lAn', 0.082, 0.066, 'hose'], ['lAn', 'lHe', 0.064, 0.07, 'schuh'], ['lHe', 'lTo', 0.07, 0.078, 'schuh'],
+  ['rHip', 'rKn', 0.098, 0.082, 'hose'], ['rKn', 'rAn', 0.082, 0.066, 'hose'], ['rAn', 'rHe', 0.064, 0.07, 'schuh'], ['rHe', 'rTo', 0.07, 0.078, 'schuh'],
+];
+
+// sitz: so weit liegt die Sitzfläche des Hockers unter der Beckenmitte
+// kopf: Radius; bauch: so weit ragt der Bauch über ein Strichmännchen hinaus (Gitarre rückt nach vorn);
+// hebung: so viel höher steht die Figur, weil die Schuhe dicker sind als die Füße eines Strichmännchens
+const FORMEN = {
+  strich: { segmente: SEGMENTE.map(([von, nach, r]) => [von, nach, r, r, '']), kugeln: [], kopf: KOPF_RADIUS, bauch: 0, hebung: 0, haare: false, sitz: 0.045 },
+  knet: { segmente: KNET_SEGMENTE, kugeln: [['pelvis', 0.155, 'hose']], kopf: 0.17, bauch: 0.1, hebung: 0.05, haare: true, sitz: 0.12 },
+};
+
+// Farben je Figur, damit man die Bandmitglieder auseinanderhält; haare: [Position, Streckung] relativ zum Kopf
+const KNET_FARBEN = [
+  { haut: '#f2c29b', shirt: '#e4572e', hose: '#2f5d8a', schuh: '#3a3a3a', haare: '#7a4521', haarForm: [[0, 0.26, -0.18], [1.06, 0.82, 1.04]] },
+  { haut: '#c48a5e', shirt: '#3fa34d', hose: '#4a4a68', schuh: '#e8e0d0', haare: '#231c18', haarForm: [[0, 0.36, -0.12], [1.04, 0.7, 1.0]] },
+];
+const KNET_GESICHT = '#2a1c14';
+
+// Leichte Unebenheiten wie von Fingern in der Knete (Rauschen als Relief)
+let knetRelief = null;
+function knetReliefTextur() {
+  if (knetRelief) return knetRelief;
+  const n = 256, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d');
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, n, n);
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * n, y = Math.random() * n, r = 2 + Math.random() * 9, hell = Math.random() < 0.5;
+    const v = g.createRadialGradient(x, y, 0, x, y, r);
+    v.addColorStop(0, hell ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.18)');
+    v.addColorStop(1, 'rgba(128,128,128,0)');
+    g.fillStyle = v;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+  }
+  knetRelief = new THREE.CanvasTexture(c);
+  knetRelief.wrapS = knetRelief.wrapT = THREE.RepeatWrapping;
+  return knetRelief;
+}
+
 // Gesicht: wird auf eine Leinwand gezeichnet und als Kappe vorn auf den Kopf gelegt.
 // Die Kappe deckt GESICHT_WINKEL (Bogenmaß) in der Breite und Höhe ab; Mitte = Blick nach vorn (+z).
 const GESICHT_PX = 512, GESICHT_WINKEL = 2.0;
@@ -42,33 +92,28 @@ const a = new THREE.Vector3(), b = new THREE.Vector3(), d = new THREE.Vector3();
 const kx = new THREE.Vector3(), ky = new THREE.Vector3(), kz = new THREE.Vector3(), km = new THREE.Matrix4();
 const weich = k => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
 
-// Ein Strichmännchen mit seinem Instrument
+// Eine Figur (Strichmännchen oder Knetfigur) mit ihrem Instrument
 class Figur {
-  constructor(studio) {
+  constructor(studio, nr) {
     this.gruppe = new THREE.Group();
     studio.scene.add(this.gruppe);
+    this.material = studio.material;   // Strichmännchen: eine Farbe je Stil
+    const farben = KNET_FARBEN[nr % KNET_FARBEN.length];
+    this.haarForm = farben.haarForm;
+    this.knetMaterial = Object.fromEntries(['haut', 'shirt', 'hose', 'schuh', 'haare'].map(teil => [teil,
+      new THREE.MeshStandardMaterial({ color: farben[teil], roughness: 0.82, metalness: 0, bumpMap: knetReliefTextur(), bumpScale: 0.6 })]));
+    this.kugel = new THREE.SphereGeometry(1, 32, 20);
+    this.koerper = new THREE.Group();
+    this.gruppe.add(this.koerper);
     this.meshes = [];
-    const zylinder = new THREE.CylinderGeometry(1, 1, 1, 20, 1, true);
-    const kugel = new THREE.SphereGeometry(1, 24, 16);
-    const mesh = geo => {
-      const m = new THREE.Mesh(geo, studio.material);
-      m.castShadow = true;
-      this.gruppe.add(m);
-      this.meshes.push(m);
-      return m;
-    };
-    this.segmente = SEGMENTE.map(([von, nach, radius]) => {
-      const s = { von, nach, radius, anfang: mesh(kugel), ende: mesh(kugel), glied: mesh(zylinder) };
-      s.anfang.scale.setScalar(radius);
-      s.ende.scale.setScalar(radius);
-      return s;
-    });
-    this.kopf = mesh(kugel);
-    this.kopf.scale.setScalar(KOPF_RADIUS);
+    this.gliedGeometrien = [];
     // Kopf mit Gesicht als eigene Gruppe, damit er sich drehen kann
-    this.gruppe.remove(this.kopf);
+    this.kopf = new THREE.Mesh(this.kugel, this.material);
+    this.kopf.castShadow = true;
+    this.haare = new THREE.Mesh(this.kugel, this.knetMaterial.haare);
+    this.haare.castShadow = true;
     this.kopfGruppe = new THREE.Group();
-    this.kopfGruppe.add(this.kopf);
+    this.kopfGruppe.add(this.kopf, this.haare);
     this.gruppe.add(this.kopfGruppe);
     this.gesichtLeinwand = document.createElement('canvas');
     this.gesichtLeinwand.width = this.gesichtLeinwand.height = GESICHT_PX;
@@ -79,18 +124,102 @@ class Figur {
       Math.PI / 2 - GESICHT_WINKEL / 2, GESICHT_WINKEL, Math.PI / 2 - GESICHT_WINKEL / 2, GESICHT_WINKEL);
     this.gesicht = new THREE.Mesh(kappe, new THREE.MeshBasicMaterial({ map: this.gesichtTextur, transparent: true, depthWrite: false }));
     this.kopfGruppe.add(this.gesicht);
+    this.stilFarbe = '#fff';
     this.gesichtFarbe = '#fff';
     this.gesichtSchluessel = '';
     this.mimik = null;
     this.kopfRichtung = null;
     this.instrumente = new Instrumente(this.gruppe);
+    this.hocker = this.hockerBauen();
     this.letzte = null;
+    this.setForm('strich');
+  }
+
+  // Hocker zum Sitzen (das Schlagzeug bringt seinen eigenen mit); Oberkante liegt bei y = 0
+  hockerBauen() {
+    const hocker = new THREE.Group();
+    const holz = new THREE.MeshStandardMaterial({ color: '#a8743f', roughness: 0.7 });
+    const metall = new THREE.MeshStandardMaterial({ color: '#555b63', roughness: 0.4, metalness: 0.6 });
+    const sitz = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.17, 0.05, 32), holz);
+    sitz.position.y = -0.025;
+    const stange = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1, 12), metall);
+    const fuss = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.03, 28), metall);
+    for (const m of [sitz, stange, fuss]) { m.castShadow = true; hocker.add(m); }
+    hocker.userData = { stange, fuss };
+    hocker.visible = false;
+    this.gruppe.add(hocker);
+    return hocker;
+  }
+
+  hockerStellen(j) {
+    const h = this.hocker;
+    h.visible = !!j.sitzt && this.instrumente.rolle !== 'schlagzeug';
+    if (!h.visible) return;
+    const oben = Math.max(0.1, j.pelvis[1] - FORMEN[this.form].sitz);
+    h.position.set(j.pelvis[0], oben, j.pelvis[2] - 0.04);
+    const { stange, fuss } = h.userData;
+    stange.scale.y = oben - 0.05;
+    stange.position.y = -0.05 - stange.scale.y / 2;
+    fuss.position.y = 0.015 - oben;
+  }
+
+  materialFuer(teil) { return this.form === 'knet' ? this.knetMaterial[teil] : this.material; }
+
+  // Körper neu aufbauen: 'strich' | 'knet'
+  setForm(name) {
+    const f = FORMEN[name] ?? FORMEN.strich;
+    this.form = name in FORMEN ? name : 'strich';
+    this.koerper.clear();
+    for (const g of this.gliedGeometrien) g.dispose();
+    this.gliedGeometrien = [];
+    this.meshes = [];
+    const mesh = (geo, teil) => {
+      const m = new THREE.Mesh(geo, this.materialFuer(teil));
+      m.castShadow = true;
+      m.userData.teil = teil;
+      this.koerper.add(m);
+      this.meshes.push(m);
+      return m;
+    };
+    this.segmente = f.segmente.map(([von, nach, r1, r2, teil]) => {
+      // Zylinder entlang +y; oben = Ende des Glieds. Länge wird beim Stellen gesetzt.
+      const geo = new THREE.CylinderGeometry(r2, r1, 1, 24, 1, true);
+      this.gliedGeometrien.push(geo);
+      const s = { von, nach, anfang: mesh(this.kugel, teil), ende: mesh(this.kugel, teil), glied: mesh(geo, teil) };
+      s.anfang.scale.setScalar(r1);
+      s.ende.scale.setScalar(r2);
+      return s;
+    });
+    this.kugeln = f.kugeln.map(([wo, r, teil]) => {
+      const m = mesh(this.kugel, teil);
+      m.scale.setScalar(r);
+      m.userData.wo = wo;
+      return m;
+    });
+    this.kopf.material = this.materialFuer('haut');
+    this.kopf.scale.setScalar(f.kopf);
+    this.gesicht.scale.setScalar(f.kopf / KOPF_RADIUS);
+    this.haare.visible = f.haare;
+    this.haare.position.fromArray(this.haarForm[0]).multiplyScalar(f.kopf);
+    this.haare.scale.fromArray(this.haarForm[1]).multiplyScalar(f.kopf);
+    this.hebung = f.hebung;
+    this.instrumente.bauch = f.bauch;
+    this.gesichtFarbeSetzen();
+    this.neuZeichnen();
   }
 
   setStil(name, material, gesichtFarbe) {
-    for (const m of this.meshes) m.material = material;
+    this.material = material;
+    for (const m of this.meshes) m.material = this.materialFuer(m.userData.teil);
+    this.kopf.material = this.materialFuer('haut');
     this.instrumente.setStil(name);
-    this.gesichtFarbe = gesichtFarbe;
+    this.stilFarbe = gesichtFarbe;
+    this.gesichtFarbeSetzen();
+  }
+
+  // Strichmännchen: Gesicht in der Hintergrundfarbe; Knetfigur: dunkel auf hellem Kopf
+  gesichtFarbeSetzen() {
+    this.gesichtFarbe = this.form === 'knet' ? KNET_GESICHT : this.stilFarbe;
     this.gesichtSchluessel = '';
     this.zeichneGesicht(this.mimik ?? NEUTRAL);
   }
@@ -169,6 +298,11 @@ class Figur {
   setPose(j, extra) {
     if (!j) return;
     this.letzte = [j, extra];
+    if (this.hebung) {
+      const h = this.hebung, k = {};
+      for (const [n, v] of Object.entries(j)) k[n] = Array.isArray(v) ? [v[0], v[1] + h, v[2]] : v;
+      j = k;
+    }
     for (const s of this.segmente) {
       a.fromArray(j[s.von]);
       b.fromArray(j[s.nach]);
@@ -179,9 +313,11 @@ class Figur {
       s.glied.visible = laenge > 1e-4;
       if (!s.glied.visible) continue;
       s.glied.position.addVectors(a, b).multiplyScalar(0.5);
-      s.glied.scale.set(s.radius, laenge, s.radius);
+      s.glied.scale.set(1, laenge, 1);
       s.glied.quaternion.setFromUnitVectors(OBEN, d.divideScalar(laenge));
     }
+    for (const m of this.kugeln) m.position.fromArray(j[m.userData.wo]);
+    this.hockerStellen(j);
     this.kopfGruppe.position.fromArray(j.headC);
     this.kopfRichtung = j.kopf ?? null;
     this.kopfAusrichten();
@@ -240,7 +376,7 @@ export class Studio3D {
 
     // Figuren: eine je Kamera; die zweite erscheint erst, wenn eine zweite Kamera läuft
     this.material = new THREE.MeshBasicMaterial();
-    this.figuren = [new Figur(this), new Figur(this)];
+    this.figuren = [new Figur(this, 0), new Figur(this, 1)];
     this.setFigurenZahl(1);
 
     this.beiBild = null;   // wird vor jedem Bild aufgerufen
@@ -277,6 +413,9 @@ export class Studio3D {
     this.raster.position.y = 0.001;
     this.scene.add(this.raster);
   }
+
+  // Aussehen aller Figuren: 'strich' | 'knet'
+  setForm(name) { for (const f of this.figuren) f.setForm(name); }
 
   // Erste Figur – so bleibt die Konsole wie bisher bedienbar
   get instrumente() { return this.figuren[0].instrumente; }

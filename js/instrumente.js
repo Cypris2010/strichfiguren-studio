@@ -91,6 +91,7 @@ export class Instrumente {
     eltern.add(this.gruppe);
     this.meshes = [];
     this.mat = {};
+    this.bauch = 0;   // wie weit der Bauch der Figur über ein Strichmännchen hinausragt (m)
     this.setStil('flach');
 
     this.gitarre = this.saiteninstrument(1, 0.45);
@@ -350,7 +351,7 @@ export class Instrumente {
   saitenStellen(g, j, r, greifLinks, markerRichtung) {
     const greifSeite = r.side.clone().multiplyScalar(greifLinks ? 1 : -1);
     // Korpus vor dem Bauch, leicht zur Anschlagseite
-    const mitte = r.P.clone().addScaledVector(r.up, 0.14).addScaledVector(r.fwd, 0.1).addScaledVector(greifSeite, -0.05);
+    const mitte = r.P.clone().addScaledVector(r.up, 0.14).addScaledVector(r.fwd, 0.1 + this.bauch).addScaledVector(greifSeite, -0.05);
     // Mit Marker am Gitarrenkopf: dessen Richtung. Sonst zeigt der Hals zur Greifhand.
     let x = null;
     if (markerRichtung) {
