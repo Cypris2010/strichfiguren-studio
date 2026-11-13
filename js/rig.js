@@ -49,7 +49,18 @@ const STANDARD = Object.fromEntries(Object.entries({
   lTo: [0.1, -0.25, 1], rTo: [-0.1, -0.25, 1],
 }).map(([k, v]) => [k, einheit(v)]));
 
-function aufbauen(richtung, { boden = true } = {}) {
+// Sitzen: Beine stehen fest (Oberschenkel nach vorn, Unterschenkel senkrecht), nur der Oberkörper
+// kommt aus dem Video. Die Beine schauen immer nach vorn (+z), wie auf einem Hocker vor der Kamera.
+const SITZBEINE = Object.fromEntries(Object.entries({
+  lHip: [1, 0, 0], rHip: [-1, 0, 0],
+  lKn: [0.12, -0.08, 1], rKn: [-0.12, -0.08, 1],
+  lAn: [0.02, -1, 0.12], rAn: [-0.02, -1, 0.12],
+  lHe: [0, -1, -0.35], rHe: [0, -1, -0.35],
+  lTo: [0.1, -0.25, 1], rTo: [-0.1, -0.25, 1],
+}).map(([k, v]) => [k, einheit(v)]));
+
+function aufbauen(richtung, { boden = true, sitzen = false } = {}) {
+  if (sitzen) { richtung = { ...richtung, ...SITZBEINE }; boden = true; }
   const j = { pelvis: [0, 0, 0] };
   for (const [kind, eltern, laenge] of KNOCHEN) {
     const p = j[eltern], d = richtung[kind];
@@ -58,12 +69,14 @@ function aufbauen(richtung, { boden = true } = {}) {
   // Boden-Fixierung: der tiefste Fußpunkt steht immer auf dem Boden
   const dy = boden ? FUSS_RADIUS - Math.min(j.lHe[1], j.rHe[1], j.lTo[1], j.rTo[1]) : HUEFTHOEHE;
   for (const k in j) j[k][1] += dy;
+  if (sitzen) j.sitzt = true;
   return j;
 }
 
 export const restPose = opts => aufbauen(STANDARD, opts);
 
 // p: 33 MediaPipe-Weltpunkte [x, y, z, sichtbarkeit] → Gelenkpositionen der Figur
+// opts: { boden: Füße auf den Boden stellen, sitzen: Beine fest im Sitzen, nur Oberkörper aus dem Video }
 export function buildRig(p, opts) {
   // MediaPipe: y nach unten, z negativ = näher an der Kamera → umdrehen für three.js
   const q = {};
