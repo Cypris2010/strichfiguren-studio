@@ -157,6 +157,15 @@
         </div>
         <p class="hinweis">Was jede Kamera auswertet (Körper, Gesicht oder beides), stellst du unter „Kamera“ ein.</p>
       </fieldset>
+      <fieldset class="block">
+        <legend>Live an Blender</legend>
+        <div class="zeile">
+          <label title="Schickt Gelenke, Kopfdrehung und Mimik live an das Blender-Addon (blender/strichfiguren_live.py)"><input type="checkbox" id="chkBlender"> Bewegung senden</label>
+          <label>an <input type="text" id="txtBlender" value="ws://localhost:8765" size="18" spellcheck="false" aria-label="Adresse des Blender-Addons"></label>
+        </div>
+        <div class="zeile"><span class="gedimmt klein" id="blenderInfo">aus</span></div>
+        <p class="hinweis">In Blender das Addon „Strichfiguren live“ installieren und dort „Empfang starten“. Funktioniert live mit Kamera und beim Abspielen einer Aufnahme.</p>
+      </fieldset>
     </div>
 
     <div class="seite" data-seite="band" hidden>
