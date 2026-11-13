@@ -50,6 +50,15 @@
         </select>
       </label>
       <label><input type="checkbox" id="chkSpiegeln"> Spiegeln</label>
+      <label title="Was erkannt wird. „Nur Gesicht“ für Nahaufnahmen: die Figur steht, nur Mimik und Kopf bewegen sich.">Erkennung
+        <select id="selErkennung">
+          <option value="beides" selected>Körper + Gesicht</option>
+          <option value="koerper">Nur Körper</option>
+          <option value="gesicht">Nur Gesicht</option>
+        </select>
+      </label>
+      <button id="btnNeutral" title="Entspannt schauen und klicken: dieses Gesicht gilt dann als neutral. Doppelklick: wieder automatisch schätzen.">Neutral merken</button>
+      <span id="gesichtInfo" class="gedimmt"></span>
     </div>
   </section>
 
@@ -61,6 +70,7 @@
       <button data-ansicht="seite">Seite</button>
       <button data-ansicht="schraeg">Schräg</button>
       <button data-ansicht="oben">Oben</button>
+      <button data-ansicht="kopf" title="Nah ans Gesicht, folgt dem Kopf">Kopf</button>
       <label><input type="checkbox" id="chkDrehen"> Drehen</label>
       <label>Stil
         <select id="selStil">
@@ -70,6 +80,7 @@
         </select>
       </label>
       <label>Glättung <input type="range" id="rngGlaettung" min="0" max="10" step="1" value="5"></label>
+      <label title="Wie stark die erkannte Mimik auf das Strichgesicht übertragen wird">Mimik <input type="range" id="rngMimik" min="1" max="4" step="0.25" value="2"></label>
       <label><input type="checkbox" id="chkBoden" checked> Füße am Boden</label>
     </div>
   </section>

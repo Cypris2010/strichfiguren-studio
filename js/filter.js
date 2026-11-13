@@ -44,3 +44,32 @@ export class PoseFilter {
     });
   }
 }
+
+// Glättet Gesichtsdaten { b: Blendshapes, r: Quaternion } und hält das letzte Gesicht
+// kurz fest, wenn die Erkennung für ein paar Bilder aussetzt (Blinzeln, Hand vorm Gesicht).
+const HALTEN = 0.3;   // Sekunden
+export class GesichtFilter {
+  constructor(staerke = 5) { this.setStaerke(staerke); }
+  setStaerke(staerke) { this.staerke = staerke; this.reset(); }
+  reset() { this.fb = this.fr = this.letztes = this.rVorher = null; this.letzteT = -Infinity; }
+  apply(g, t) {
+    if (!g) return t >= this.letzteT && t - this.letzteT < HALTEN ? this.letztes : null;
+    // q und −q sind dieselbe Drehung: beim Vorzeichen des letzten Bildes bleiben, sonst springt der Filter
+    let r = g.r;
+    if (this.rVorher && r[0] * this.rVorher[0] + r[1] * this.rVorher[1] + r[2] * this.rVorher[2] + r[3] * this.rVorher[3] < 0) r = r.map(v => -v);
+    this.rVorher = r;
+    let b = g.b;
+    if (this.staerke > 0) {
+      // Mimik ist schnell (Singen, Blinzeln): schwächer glätten als den Körper
+      const c = minCutoff(this.staerke) * 2;
+      if (this.fb?.length !== b.length) this.fb = b.map(() => new OneEuro(c, BETA * 2));
+      this.fr ??= r.map(() => new OneEuro(c, BETA));
+      b = b.map((v, i) => this.fb[i].filter(v, t));
+      r = r.map((v, i) => this.fr[i].filter(v, t));
+    }
+    const l = Math.hypot(...r) || 1;
+    this.letztes = { ...g, b, r: r.map(v => v / l) };
+    this.letzteT = t;
+    return this.letztes;
+  }
+}
