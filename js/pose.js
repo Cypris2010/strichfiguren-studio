@@ -13,33 +13,45 @@ const r4 = v => Math.round(v * 1e4) / 1e4;
 const r2 = v => Math.round(v * 100) / 100;
 let fileset = null;
 
+// Gemeinsame Laufzeit für alle MediaPipe-Modelle (Pose und Gesicht)
+export const vision = async () => (fileset ??= await FilesetResolver.forVisionTasks(WASM));
+
+// Erst auf der Grafikkarte versuchen, sonst auf der CPU
+export async function mitGpu(Klasse, optionen) {
+  const fs = await vision();
+  const mit = delegate => ({ ...optionen, baseOptions: { ...optionen.baseOptions, delegate } });
+  try {
+    return await Klasse.createFromOptions(fs, mit('GPU'));
+  } catch (err) {
+    console.warn('GPU nicht verfügbar, Erkennung läuft auf der CPU', err);
+    return Klasse.createFromOptions(fs, mit('CPU'));
+  }
+}
+
+// MediaPipe verlangt streng steigende Zeitstempel. Springt die Quelle zurück
+// (neues Video, Analyse nach Live-Vorschau), verschieben wir die Zeitachse,
+// behalten aber die Abstände zwischen den Bildern bei.
+export function monotoneZeit() {
+  let letzte = -Infinity, versatz = 0;
+  return ms => {
+    if (ms + versatz <= letzte) versatz = letzte + 33 - ms;
+    letzte = Math.max(Math.round(ms + versatz), letzte + 1);
+    return letzte;
+  };
+}
+
 export async function createDetector(name) {
-  fileset ??= await FilesetResolver.forVisionTasks(WASM);
-  const optionen = delegate => ({
-    baseOptions: { modelAssetPath: modellUrl(name), delegate },
+  const landmarker = await mitGpu(PoseLandmarker, {
+    baseOptions: { modelAssetPath: modellUrl(name) },
     runningMode: 'VIDEO',
     numPoses: 1,
   });
-  let landmarker;
-  try {
-    landmarker = await PoseLandmarker.createFromOptions(fileset, optionen('GPU'));
-  } catch (err) {
-    console.warn('GPU nicht verfügbar, Erkennung läuft auf der CPU', err);
-    landmarker = await PoseLandmarker.createFromOptions(fileset, optionen('CPU'));
-  }
-
-  // MediaPipe verlangt streng steigende Zeitstempel. Springt die Quelle zurück
-  // (neues Video, Analyse nach Live-Vorschau), verschieben wir die Zeitachse,
-  // behalten aber die Abstände zwischen den Bildern bei.
-  let letzte = -Infinity, versatz = 0;
+  const zeit = monotoneZeit();
 
   return {
     name,
     detect(quelle, ms) {
-      if (ms + versatz <= letzte) versatz = letzte + 33 - ms;
-      const ts = Math.max(Math.round(ms + versatz), letzte + 1);
-      letzte = ts;
-      const r = landmarker.detectForVideo(quelle, ts);
+      const r = landmarker.detectForVideo(quelle, zeit(ms));
       const welt = r.worldLandmarks?.[0], bild = r.landmarks?.[0];
       if (!welt || !bild) return null;
       return {

@@ -1,6 +1,8 @@
 // 3D-Ansicht mit three.js: Boden, Licht, Kamera und das Strichmännchen.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Instrumente } from './instrumente.js';
+import { GRUND_LAECHELN } from './face.js';
 
 const STILE = {
   flach:     { hintergrund: '#f3efe6', figur: '#1c3762', licht: false, raster: ['#c9c2b3', '#e2dccf'], schatten: 0.16 },
@@ -13,8 +15,10 @@ const ANSICHTEN = {
   seite:   [3.6, 1.25, 0],
   schraeg: [2.6, 1.6, 2.6],
   oben:    [0.01, 4.2, 0.6],
+  kopf:    null,   // nah ans Gesicht der ersten Figur, folgt dem Kopf
 };
 const ZIEL = new THREE.Vector3(0, 0.9, 0);
+const ABSTAND = 1.8;   // zwei Figuren: so weit stehen sie auseinander (m)
 
 // Glieder als Kapseln: [von, nach, Radius in m]; Namen wie in rig.js
 const SEGMENTE = [
@@ -28,9 +32,177 @@ const SEGMENTE = [
 ];
 const KOPF_RADIUS = 0.115;
 
+// Gesicht: wird auf eine Leinwand gezeichnet und als Kappe vorn auf den Kopf gelegt.
+// Die Kappe deckt GESICHT_WINKEL (Bogenmaß) in der Breite und Höhe ab; Mitte = Blick nach vorn (+z).
+const GESICHT_PX = 512, GESICHT_WINKEL = 2.0;
+const NEUTRAL = { augeL: 1, augeR: 1, braueInnen: 0, braueL: 0, braueR: 0, mundAuf: 0, laechelnL: GRUND_LAECHELN, laechelnR: GRUND_LAECHELN, spitz: 0 };
+
 const OBEN = new THREE.Vector3(0, 1, 0);
 const a = new THREE.Vector3(), b = new THREE.Vector3(), d = new THREE.Vector3();
+const kx = new THREE.Vector3(), ky = new THREE.Vector3(), kz = new THREE.Vector3(), km = new THREE.Matrix4();
 const weich = k => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
+
+// Ein Strichmännchen mit seinem Instrument
+class Figur {
+  constructor(studio) {
+    this.gruppe = new THREE.Group();
+    studio.scene.add(this.gruppe);
+    this.meshes = [];
+    const zylinder = new THREE.CylinderGeometry(1, 1, 1, 20, 1, true);
+    const kugel = new THREE.SphereGeometry(1, 24, 16);
+    const mesh = geo => {
+      const m = new THREE.Mesh(geo, studio.material);
+      m.castShadow = true;
+      this.gruppe.add(m);
+      this.meshes.push(m);
+      return m;
+    };
+    this.segmente = SEGMENTE.map(([von, nach, radius]) => {
+      const s = { von, nach, radius, anfang: mesh(kugel), ende: mesh(kugel), glied: mesh(zylinder) };
+      s.anfang.scale.setScalar(radius);
+      s.ende.scale.setScalar(radius);
+      return s;
+    });
+    this.kopf = mesh(kugel);
+    this.kopf.scale.setScalar(KOPF_RADIUS);
+    // Kopf mit Gesicht als eigene Gruppe, damit er sich drehen kann
+    this.gruppe.remove(this.kopf);
+    this.kopfGruppe = new THREE.Group();
+    this.kopfGruppe.add(this.kopf);
+    this.gruppe.add(this.kopfGruppe);
+    this.gesichtLeinwand = document.createElement('canvas');
+    this.gesichtLeinwand.width = this.gesichtLeinwand.height = GESICHT_PX;
+    this.gesichtTextur = new THREE.CanvasTexture(this.gesichtLeinwand);
+    this.gesichtTextur.colorSpace = THREE.SRGBColorSpace;
+    this.gesichtTextur.anisotropy = 4;
+    const kappe = new THREE.SphereGeometry(KOPF_RADIUS * 1.004, 32, 24,
+      Math.PI / 2 - GESICHT_WINKEL / 2, GESICHT_WINKEL, Math.PI / 2 - GESICHT_WINKEL / 2, GESICHT_WINKEL);
+    this.gesicht = new THREE.Mesh(kappe, new THREE.MeshBasicMaterial({ map: this.gesichtTextur, transparent: true, depthWrite: false }));
+    this.kopfGruppe.add(this.gesicht);
+    this.gesichtFarbe = '#fff';
+    this.gesichtSchluessel = '';
+    this.mimik = null;
+    this.kopfRichtung = null;
+    this.instrumente = new Instrumente(this.gruppe);
+    this.letzte = null;
+  }
+
+  setStil(name, material, gesichtFarbe) {
+    for (const m of this.meshes) m.material = material;
+    this.instrumente.setStil(name);
+    this.gesichtFarbe = gesichtFarbe;
+    this.gesichtSchluessel = '';
+    this.zeichneGesicht(this.mimik ?? NEUTRAL);
+  }
+
+  // Mimik und Kopfdrehung aus face.js; null = neutrales Gesicht, Kopfrichtung grob aus der Pose
+  setMimik(m) {
+    this.mimik = m;
+    this.zeichneGesicht(m ?? NEUTRAL);
+    this.kopfAusrichten();
+  }
+
+  kopfAusrichten() {
+    const q = this.kopfGruppe.quaternion, m = this.mimik, k = this.kopfRichtung;
+    if (m?.r) q.fromArray(m.r);
+    else if (k) {
+      kx.fromArray(k.x);
+      kz.fromArray(k.f).addScaledVector(kx, -kz.dot(kx));
+      if (kz.lengthSq() < 1e-8) { q.identity(); return; }
+      kz.normalize();
+      ky.crossVectors(kz, kx);
+      q.setFromRotationMatrix(km.makeBasis(kx, ky, kz));
+    } else q.identity();
+  }
+
+  // Strichgesicht auf die Leinwand zeichnen. Linke Seite der Person = rechts auf der Leinwand
+  // (so sieht man sie von vorn); 1 Bogenmaß auf dem Kopf = GESICHT_PX / GESICHT_WINKEL Pixel.
+  zeichneGesicht(m) {
+    const schluessel = Object.values(m).map(v => (typeof v === 'number' ? v.toFixed(2) : '')).join() + this.gesichtFarbe;
+    if (schluessel === this.gesichtSchluessel) return;
+    this.gesichtSchluessel = schluessel;
+    const g = this.gesichtLeinwand.getContext('2d'), E = GESICHT_PX / GESICHT_WINKEL;
+    const cx = GESICHT_PX / 2, cy = GESICHT_PX / 2;
+    g.clearRect(0, 0, GESICHT_PX, GESICHT_PX);
+    g.strokeStyle = g.fillStyle = this.gesichtFarbe;
+    g.lineCap = g.lineJoin = 'round';
+    const augeY = cy - 0.12 * E, augeX = 0.36 * E, braueY = augeY - 0.27 * E;
+    for (const [seite, offen, braue] of [[1, m.augeL, m.braueL], [-1, m.augeR, m.braueR]]) {
+      const x = cx + seite * augeX;
+      // Auge: Punkt, beim Blinzeln ein Strich
+      g.beginPath();
+      g.ellipse(x, augeY, 0.1 * E, Math.max(0.016 * E, 0.13 * E * offen), 0, 0, Math.PI * 2);
+      g.fill();
+      // Braue – hoch: ganze Braue hebt sich (außen mehr); runter: innen senkt sich (grimmig)
+      const hoch = Math.max(0, braue), runter = Math.max(0, -braue);
+      const innen = braueY - (m.braueInnen * 0.16 + hoch * 0.06 - runter * 0.1) * E;
+      const aussen = braueY - (hoch * 0.14 - runter * 0.02) * E;
+      g.lineWidth = 0.065 * E;
+      g.beginPath();
+      g.moveTo(x - seite * 0.13 * E, innen);
+      g.lineTo(x + seite * 0.13 * E, aussen);
+      g.stroke();
+    }
+    // Mund: Breite durch Lächeln und Spitzmund, Öffnung durch jawOpen, Mundwinkel durch Lächeln
+    const mundY = cy + 0.38 * E;
+    const halb = 0.27 * E * (1 + 0.25 * Math.max(m.laechelnL, m.laechelnR, 0) - 0.45 * m.spitz);
+    const xl = cx + halb, xr = cx - halb;
+    const yl = mundY - m.laechelnL * 0.12 * E, yr = mundY - m.laechelnR * 0.12 * E;
+    const bogen = (m.laechelnL + m.laechelnR) / 2 * 0.16 * E;
+    const auf = m.mundAuf * 0.42 * E;
+    g.lineWidth = 0.065 * E;
+    g.beginPath();
+    g.moveTo(xr, yr);
+    if (auf < 0.03 * E) {
+      g.quadraticCurveTo(cx, mundY + bogen, xl, yl);
+      g.stroke();
+    } else {
+      g.quadraticCurveTo(cx, mundY + bogen * 0.5 - auf * 0.25, xl, yl);
+      g.quadraticCurveTo(cx, mundY + bogen + auf, xr, yr);
+      g.fill();
+      g.stroke();
+    }
+    this.gesichtTextur.needsUpdate = true;
+  }
+
+  // j: Gelenkpositionen aus rig.js; extra: Richtungen aus Farbmarkern (optional)
+  setPose(j, extra) {
+    if (!j) return;
+    this.letzte = [j, extra];
+    for (const s of this.segmente) {
+      a.fromArray(j[s.von]);
+      b.fromArray(j[s.nach]);
+      s.anfang.position.copy(a);
+      s.ende.position.copy(b);
+      d.subVectors(b, a);
+      const laenge = d.length();
+      s.glied.visible = laenge > 1e-4;
+      if (!s.glied.visible) continue;
+      s.glied.position.addVectors(a, b).multiplyScalar(0.5);
+      s.glied.scale.set(s.radius, laenge, s.radius);
+      s.glied.quaternion.setFromUnitVectors(OBEN, d.divideScalar(laenge));
+    }
+    this.kopfGruppe.position.fromArray(j.headC);
+    this.kopfRichtung = j.kopf ?? null;
+    this.kopfAusrichten();
+    this.instrumente.update(j, extra);
+  }
+
+  // Letzte Pose noch einmal anwenden, z. B. nach dem Einmessen bei angehaltenem Video
+  neuZeichnen() { if (this.letzte) this.setPose(...this.letzte); }
+
+  // rolle: '' | 'gitarre' | 'bass' | 'schlagzeug'; hand: 'auto' | 'rechts' | 'links'
+  setInstrument(rolle, hand) {
+    this.instrumente.setRolle(rolle);
+    this.instrumente.setHand(hand);
+    this.neuZeichnen();
+  }
+  // Feste Werte aus einer ganzen Aufnahme, null = live nachführen
+  setAnker(anker) {
+    this.instrumente.setAnker(anker);
+    if (!anker) this.instrumente.liveZuruecksetzen();
+  }
+}
 
 export class Studio3D {
   constructor(el) {
@@ -48,7 +220,7 @@ export class Studio3D {
     c.target.copy(ZIEL);
     c.enableDamping = true;
     c.autoRotateSpeed = 1.2;
-    c.minDistance = 0.8;
+    c.minDistance = 0.3;
     c.maxDistance = 15;
     c.maxPolarAngle = Math.PI * 0.495;
 
@@ -66,31 +238,14 @@ export class Studio3D {
     this.scene.add(this.boden);
     this.raster = null;
 
-    // Figur
-    this.figur = new THREE.Group();
-    this.scene.add(this.figur);
+    // Figuren: eine je Kamera; die zweite erscheint erst, wenn eine zweite Kamera läuft
     this.material = new THREE.MeshBasicMaterial();
-    this.meshes = [];
-    const zylinder = new THREE.CylinderGeometry(1, 1, 1, 20, 1, true);
-    const kugel = new THREE.SphereGeometry(1, 24, 16);
-    const mesh = geo => {
-      const m = new THREE.Mesh(geo, this.material);
-      m.castShadow = true;
-      this.figur.add(m);
-      this.meshes.push(m);
-      return m;
-    };
-    this.segmente = SEGMENTE.map(([von, nach, radius]) => {
-      const s = { von, nach, radius, anfang: mesh(kugel), ende: mesh(kugel), glied: mesh(zylinder) };
-      s.anfang.scale.setScalar(radius);
-      s.ende.scale.setScalar(radius);
-      return s;
-    });
-    this.kopf = mesh(kugel);
-    this.kopf.scale.setScalar(KOPF_RADIUS);
+    this.figuren = [new Figur(this), new Figur(this)];
+    this.setFigurenZahl(1);
 
     this.beiBild = null;   // wird vor jedem Bild aufgerufen
     this.flug = null;
+    this.messung = { ms: 0, abstand: 1000 / 60, zuletzt: 0 };   // Dauer eines Bildes (ms) und Abstand zwischen zwei Bildern
     this.setStil('flach');
     new ResizeObserver(() => this.groesse()).observe(el);
     this.groesse();
@@ -113,7 +268,7 @@ export class Studio3D {
     this.material = s.licht
       ? new THREE.MeshStandardMaterial({ color: s.figur, roughness: 0.5, metalness: 0 })
       : new THREE.MeshBasicMaterial({ color: s.figur });
-    for (const m of this.meshes) m.material = this.material;
+    for (const f of this.figuren) f.setStil(name, this.material, s.hintergrund);
     this.boden.material.opacity = s.schatten;
     this.boden.visible = s.schatten > 0;
     if (this.raster) { this.scene.remove(this.raster); this.raster.geometry.dispose(); this.raster.material.dispose(); }
@@ -122,46 +277,56 @@ export class Studio3D {
     this.scene.add(this.raster);
   }
 
-  // j: Gelenkpositionen aus rig.js
-  setPose(j) {
-    if (!j) return;
-    for (const s of this.segmente) {
-      a.fromArray(j[s.von]);
-      b.fromArray(j[s.nach]);
-      s.anfang.position.copy(a);
-      s.ende.position.copy(b);
-      d.subVectors(b, a);
-      const laenge = d.length();
-      s.glied.visible = laenge > 1e-4;
-      if (!s.glied.visible) continue;
-      s.glied.position.addVectors(a, b).multiplyScalar(0.5);
-      s.glied.scale.set(s.radius, laenge, s.radius);
-      s.glied.quaternion.setFromUnitVectors(OBEN, d.divideScalar(laenge));
-    }
-    this.kopf.position.fromArray(j.headC);
+  // Erste Figur – so bleibt die Konsole wie bisher bedienbar
+  get instrumente() { return this.figuren[0].instrumente; }
+
+  // Eine Figur steht in der Mitte, zwei stehen nebeneinander
+  setFigurenZahl(n) {
+    this.figuren.forEach((f, i) => {
+      f.gruppe.visible = i < n;
+      f.gruppe.position.x = n > 1 ? (i - (n - 1) / 2) * ABSTAND : 0;
+    });
   }
 
-  setSpiegeln(an) { this.figur.scale.x = an ? -1 : 1; }
+  neuZeichnen() { for (const f of this.figuren) f.neuZeichnen(); }
+  // Spiegeln je Figur (folgt der Kamera, die ihren Körper liefert)
+  setSpiegeln(an, nr = null) {
+    for (const [i, f] of this.figuren.entries()) if (nr === null || nr === i) f.gruppe.scale.x = an ? -1 : 1;
+  }
   setDrehen(an) { this.controls.autoRotate = an; }
 
+  // Kamera-Voreinstellung; „kopf“ geht nah ans Gesicht der ersten Figur und folgt ihm danach
   setAnsicht(name) {
-    const ziel = ANSICHTEN[name];
-    if (!ziel) return;
+    if (!(name in ANSICHTEN)) return;
+    this.folgeKopf = name === 'kopf';
+    const kopf = this.figuren[0].kopfGruppe;
+    const nachZiel = this.folgeKopf ? kopf.getWorldPosition(new THREE.Vector3()) : ZIEL.clone();
+    const nach = this.folgeKopf ? nachZiel.clone().add(new THREE.Vector3(0.12, 0.04, 0.75)) : new THREE.Vector3().fromArray(ANSICHTEN[name]);
     this.flug = {
-      von: this.camera.position.clone(), nach: new THREE.Vector3().fromArray(ziel),
-      vonZiel: this.controls.target.clone(), start: performance.now(), dauer: 700,
+      von: this.camera.position.clone(), nach,
+      vonZiel: this.controls.target.clone(), nachZiel, start: performance.now(), dauer: 700,
     };
   }
 
   bild(t) {
+    const anfang = performance.now();
     this.beiBild?.(t);
     if (this.flug) {
       const f = this.flug, k = Math.min(1, (performance.now() - f.start) / f.dauer), e = weich(k);
       this.camera.position.lerpVectors(f.von, f.nach, e);
-      this.controls.target.lerpVectors(f.vonZiel, ZIEL, e);
+      this.controls.target.lerpVectors(f.vonZiel, f.nachZiel, e);
       if (k >= 1) this.flug = null;
+    } else if (this.folgeKopf) {
+      // Kamera samt Blickpunkt mit dem Kopf verschieben; Drehen und Zoomen mit der Maus bleiben möglich
+      this.figuren[0].kopfGruppe.getWorldPosition(d).sub(this.controls.target);
+      this.camera.position.add(d);
+      this.controls.target.add(d);
     }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+    const m = this.messung;
+    m.ms += (performance.now() - anfang - m.ms) * 0.1;
+    if (m.zuletzt) m.abstand += (anfang - m.zuletzt - m.abstand) * 0.1;
+    m.zuletzt = anfang;
   }
 }
