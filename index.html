@@ -26,14 +26,33 @@
   <section class="quelle">
     <div class="werkzeuge">
       <button id="btnKamera">Kamera</button>
+      <select id="selKamera" hidden aria-label="Kamera wählen"
+        title="Kamera wechseln, z. B. aufs iPhone (am Mac als Integrationskamera)"></select>
+      <button id="btnKamera2" class="gedimmt">+ 2. Kamera</button>
+      <select id="selZweite" aria-label="Wofür die zweite Kamera da ist"
+        title="Gleiche Figur: dieselbe Person aus einem zweiten Winkel, beide Ansichten werden zu einer genaueren Figur verschmolzen. Eigene Figur: eine zweite Person mit eigenem Instrument.">
+        <option value="winkel" selected>gleiche Figur (2. Winkel)</option>
+        <option value="person">eigene Figur (2. Person)</option>
+      </select>
+      <select id="selKamera2" hidden aria-label="Zweite Kamera wählen" title="Welche Kamera die zweite ist"></select>
       <label class="knopf" id="lblVideo">Video öffnen …<input id="dateiVideo" type="file" accept="video/*" hidden></label>
       <button id="btnAufnahme" disabled>● Aufnahme</button>
       <button id="btnAnalyse" disabled>Analysieren</button>
     </div>
-    <div class="videoRahmen" id="videoRahmen">
-      <video id="video" playsinline muted></video>
-      <canvas id="overlay"></canvas>
-      <p class="leer" id="videoLeer">Kamera starten oder ein Video öffnen.<br>Ganzer Körper im Bild, Stativ, gutes Licht.</p>
+    <div class="videos" id="videos">
+      <div class="videoRahmen" id="videoRahmen">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <p class="messung" id="messung" hidden></p>
+        <span class="etikett" id="etikett1">Winkel 1</span>
+        <p class="leer" id="videoLeer">Kamera starten oder ein Video öffnen.<br>Ganzer Körper im Bild, Stativ, gutes Licht.</p>
+      </div>
+      <div class="videoRahmen" id="videoRahmen2" hidden>
+        <video id="video2" playsinline muted></video>
+        <canvas id="overlay2"></canvas>
+        <span class="etikett" id="etikett2">Winkel 2</span>
+        <p class="leer" id="videoLeer2" hidden></p>
+      </div>
     </div>
     <div class="werkzeuge">
       <label>Modell
@@ -51,10 +70,20 @@
       </label>
       <label><input type="checkbox" id="chkSpiegeln"> Spiegeln</label>
     </div>
+    <div class="werkzeuge">
+      <label title="Farbiges Tape im Video verfolgen"><input type="checkbox" id="chkMarker"> Tape-Marker</label>
+      <button id="btnFarbeA" title="Farbe wählen: im Video auf das Tape am Gitarrenkopf oder an den Stickspitzen klicken">
+        <span class="farbfeld" id="feldA"></span> Kopf/Sticks</button>
+      <button id="btnFarbeB" title="Farbe wählen: im Video auf das Tape an einem Becken klicken">
+        <span class="farbfeld" id="feldB"></span> Becken</button>
+      <label>Toleranz <input type="range" id="rngToleranz" min="1" max="10" step="1" value="4"></label>
+      <button id="btnEinmessen" title="Im Video nacheinander auf die Teile des Schlagzeugs klicken">Schlagzeug einmessen</button>
+      <button id="btnKitZurueck" title="Schlagzeug wieder in der Standardaufstellung">↺</button>
+    </div>
   </section>
 
   <section class="ansicht">
-    <div id="dreiD" class="dreiD"></div>
+    <div id="dreiD" class="dreiD"><div id="hud" class="hud" hidden></div><div id="hud2" class="hud rechts" hidden></div></div>
     <div class="werkzeuge">
       <span class="gedimmt">Kamera</span>
       <button data-ansicht="vorne">Vorne</button>
@@ -62,6 +91,38 @@
       <button data-ansicht="schraeg">Schräg</button>
       <button data-ansicht="oben">Oben</button>
       <label><input type="checkbox" id="chkDrehen"> Drehen</label>
+      <label><span id="rolleText">Instrument</span>
+        <select id="selRolle">
+          <option value="">keins</option>
+          <option value="gitarre">Gitarre</option>
+          <option value="bass">Bass</option>
+          <option value="schlagzeug">Schlagzeug</option>
+        </select>
+      </label>
+      <label>Hand
+        <select id="selHand">
+          <option value="auto" selected>automatisch</option>
+          <option value="rechts">Rechtshänder</option>
+          <option value="links">Linkshänder</option>
+        </select>
+      </label>
+      <span class="gruppe" id="zweitesInstrument" hidden>
+        <label>Person 2
+          <select id="selRolle2">
+            <option value="">keins</option>
+            <option value="gitarre">Gitarre</option>
+            <option value="bass">Bass</option>
+            <option value="schlagzeug">Schlagzeug</option>
+          </select>
+        </label>
+        <label>Hand
+          <select id="selHand2">
+            <option value="auto" selected>automatisch</option>
+            <option value="rechts">Rechtshänder</option>
+            <option value="links">Linkshänder</option>
+          </select>
+        </label>
+      </span>
       <label>Stil
         <select id="selStil">
           <option value="flach" selected>Flach</option>
@@ -71,6 +132,28 @@
       </label>
       <label>Glättung <input type="range" id="rngGlaettung" min="0" max="10" step="1" value="5"></label>
       <label><input type="checkbox" id="chkBoden" checked> Füße am Boden</label>
+    </div>
+    <div class="werkzeuge">
+      <label title="Bewegungen erzeugen Töne: Schläge mit den Sticks, Fußpedale, Anschläge an Gitarre und Bass">
+        <input type="checkbox" id="chkLuftband"> Luftband</label>
+      <label title="Vier Akkorde für Gitarre und Bass: der erste am Kopf des Halses, der letzte am Korpus">Akkorde
+        <select id="selAkkorde">
+          <option value="G D Em C" selected>G D Em C</option>
+          <option value="Am F C G">Am F C G</option>
+          <option value="Em C G D">Em C G D</option>
+          <option value="E5 A5 D5 G5">E5 A5 D5 G5 (Powerchords)</option>
+        </select>
+      </label>
+      <label>Klang
+        <select id="selKlang">
+          <option value="clean" selected>clean</option>
+          <option value="verzerrt">verzerrt</option>
+        </select>
+      </label>
+      <label title="Wie kräftig eine Bewegung sein muss, damit sie klingt">Empfindlichkeit
+        <input type="range" id="rngEmpfindlich" min="1" max="10" step="1" value="5"></label>
+      <button id="btnTonspur" disabled title="Die erkannten Töne der Aufnahme als WAV-Datei, beginnt genau mit dem Video">Tonspur WAV</button>
+      <button id="btnMidi" disabled title="Die erkannten Töne der Aufnahme als MIDI-Datei fürs Musikprogramm">MIDI</button>
     </div>
   </section>
 </main>
