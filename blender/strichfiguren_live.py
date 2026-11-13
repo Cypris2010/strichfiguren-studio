@@ -31,10 +31,12 @@ bl_info = {
 import base64
 import hashlib
 import json
+import os
 import socket
 import struct
 import threading
 import time
+import traceback
 
 import bmesh
 import bpy
@@ -434,6 +436,30 @@ class Zustand:
     letzter_frame = None
     hoechster_frame = 0
     letzte_anzeige = 0.0
+    takte = 0
+    spur = ""
+    letzte_diagnose = 0.0
+
+
+def diagnose(jetzt):
+    # Zur Fehlersuche: mit Umgebungsvariable SF_STATUS=<datei> alle 2 s den Zustand dorthin schreiben
+    pfad = os.environ.get("SF_STATUS")
+    if not pfad or jetzt - Zustand.letzte_diagnose < 2:
+        return
+    Zustand.letzte_diagnose = jetzt
+    becken = bpy.data.objects.get("SF1_pelvis")
+    daten = {
+        "takte": Zustand.takte, "empfangen": EMPFANG.anzahl, "verbindungen": EMPFANG.verbindungen,
+        "fehler": EMPFANG.fehler, "spur": Zustand.spur,
+        "objekte": sum(1 for o in bpy.data.objects if o.name.startswith("SF")),
+        "becken": list(becken.location) if becken else None,
+        "szene": bpy.context.scene.name, "sammlungen": [c.name for c in bpy.context.scene.collection.children],
+    }
+    try:
+        with open(pfad, "w") as f:
+            json.dump(daten, f, indent=1)
+    except OSError:
+        pass
 
 
 def frame_fuer(scene, msg):
@@ -470,7 +496,10 @@ def takt():
             anwenden(letzte)
     except Exception as ex:  # nie den Timer sterben lassen
         EMPFANG.fehler = str(ex)
+        Zustand.spur = traceback.format_exc()
+    Zustand.takte += 1
     jetzt = time.monotonic()
+    diagnose(jetzt)
     if jetzt - Zustand.letzte_anzeige > 0.5:
         Zustand.letzte_anzeige = jetzt
         for fenster in bpy.context.window_manager.windows:
