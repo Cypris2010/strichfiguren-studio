@@ -138,6 +138,15 @@ erzeugt, ohne Samples.
 Das Studio kann die Bewegung live an Blender schicken. Dort bewegt sie Strichfiguren, die man ausleuchten,
 filmen und als Video rendern kann. Auf Wunsch zeichnet Blender alles als Keyframes auf.
 
+Am schnellsten: Blender direkt mit dem Startskript öffnen. Es lädt das Addon, startet den Empfang und stellt
+die Ansicht auf die Figur ein:
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender --python blender/live_starten.py
+```
+
+Oder dauerhaft installieren:
+
 1. In Blender (ab 3.6): *Bearbeiten → Einstellungen → Add-ons → Von Datenträger installieren …* →
    `blender/strichfiguren_live.py` wählen und den Haken setzen.
 2. Im 3D-Fenster mit **N** die Seitenleiste öffnen → Reiter **Strichfiguren** → **Empfang starten**.
