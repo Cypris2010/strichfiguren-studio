@@ -16,7 +16,10 @@
 #   SF{N}_AugeL/R, SF{N}_Mund   einfache Gesichtsteile, die der Mimik folgen
 # An die Empties kann man später eigene Figuren hängen (z. B. per Constraint an ein Armature).
 #
-# Der Server lauscht nur auf diesem Rechner (127.0.0.1) und braucht keine zusätzlichen Pakete.
+# Der Server lauscht normalerweise nur auf diesem Rechner (127.0.0.1). Mit „Im Netzwerk erreichbar“ nimmt er
+# auch Verbindungen von anderen Rechnern im lokalen Netz an; dann zeigt die Seitenleiste die Adresse, die man
+# im Studio einträgt (z. B. ws://192.168.1.23:8765). Optional schützt ein Kennwort den Empfang.
+# Braucht keine zusätzlichen Pakete.
 
 bl_info = {
     "name": "Strichfiguren live",
@@ -30,6 +33,7 @@ bl_info = {
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -37,6 +41,7 @@ import struct
 import threading
 import time
 import traceback
+import urllib.parse
 
 import bmesh
 import bpy
@@ -86,15 +91,22 @@ class Empfang:
         self.verbindungen = 0
         self.anzahl = 0
         self.fehler = ""
+        self.netzwerk = False
+        self.kennwort = ""
+        self.adressen = []        # unter diesen Adressen ist der Empfang erreichbar (für die Anzeige)
+        self.gegenstellen = {}    # verbundene Rechner: IP → Anzahl Verbindungen
+        self.abgewiesen = ""      # zuletzt wegen falschem Kennwort abgewiesen (IP)
 
-    def starten(self, port):
+    def starten(self, port, netzwerk=False, kennwort=""):
         if self.laeuft:
             return
         self.port, self.fehler, self.anzahl = port, "", 0
-        # „localhost“ ist je nach Browser IPv4 (Chrome) oder IPv6 (Safari) – auf beiden lauschen,
-        # aber nur auf diesem Rechner
+        self.netzwerk, self.kennwort, self.abgewiesen = netzwerk, kennwort.strip(), ""
+        # „localhost“ ist je nach Browser IPv4 (Chrome) oder IPv6 (Safari) – auf beiden lauschen.
+        # Ohne Netzwerk nur auf diesem Rechner, mit Netzwerk auf allen Schnittstellen.
+        orte = (("0.0.0.0", "::") if netzwerk else ("127.0.0.1", "::1"))
         server, fehler = [], []
-        for familie, adresse in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        for familie, adresse in zip((socket.AF_INET, socket.AF_INET6), orte):
             try:
                 srv = socket.socket(familie, socket.SOCK_STREAM)
                 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -110,6 +122,9 @@ class Empfang:
             self.fehler = f"Port {port} geht nicht: " + "; ".join(fehler)
             return
         self.laeuft = True
+        self.adressen = [f"ws://localhost:{port}"]
+        if netzwerk:
+            self.adressen = [f"ws://{ip}:{port}" for ip in eigene_adressen()] + self.adressen
         self.threads = [threading.Thread(target=self._annehmen, args=(srv,), daemon=True) for srv in server]
         for t in self.threads:
             t.start()
@@ -129,20 +144,37 @@ class Empfang:
         with srv:
             while self.laeuft:
                 try:
-                    conn, _ = srv.accept()
+                    conn, gegenstelle = srv.accept()
                 except socket.timeout:
                     continue
                 except OSError:
                     break
-                threading.Thread(target=self._client, args=(conn,), daemon=True).start()
+                ip = gegenstelle[0].removeprefix("::ffff:")
+                threading.Thread(target=self._client, args=(conn, ip), daemon=True).start()
 
-    def _client(self, conn):
+    def _client(self, conn, ip):
         conn.settimeout(0.5)
+        ok = False
+        try:
+            pfad = self._handshake(conn)
+            ok = pfad is not None and self._kennwort_ok(pfad)
+            if pfad is not None and not ok:
+                # Browser sieht den Grund als Close-Code 4001 und kann „Kennwort falsch“ anzeigen
+                self.abgewiesen = ip
+                grund = "Kennwort falsch".encode()
+                conn.sendall(bytes([0x88, 2 + len(grund)]) + struct.pack(">H", 4001) + grund)
+        except OSError:
+            ok = False
+        if not ok:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            return
         with self.lock:
             self.verbindungen += 1
+            self.gegenstellen[ip] = self.gegenstellen.get(ip, 0) + 1
         try:
-            if not self._handshake(conn):
-                return
             for text in self._nachrichten(conn):
                 try:
                     msg = json.loads(text)
@@ -161,6 +193,9 @@ class Empfang:
         finally:
             with self.lock:
                 self.verbindungen -= 1
+                self.gegenstellen[ip] -= 1
+                if not self.gegenstellen[ip]:
+                    del self.gegenstellen[ip]
             try:
                 conn.close()
             except OSError:
@@ -180,24 +215,34 @@ class Empfang:
             daten += stueck
         return daten
 
+    def _kennwort_ok(self, pfad):
+        if not self.kennwort:
+            return True
+        k = urllib.parse.parse_qs(urllib.parse.urlsplit(pfad).query).get("k", [""])[0]
+        return hmac.compare_digest(k.encode(), self.kennwort.encode())
+
     def _handshake(self, conn):
+        # gibt den angefragten Pfad (mit ?k=…) zurück oder None
         kopf = b""
         while b"\r\n\r\n" not in kopf:
             kopf += self._lesen(conn, 1)
             if len(kopf) > 16384:
-                return False
+                return None
+        zeilen = kopf.decode("latin-1").split("\r\n")
+        teile = zeilen[0].split(" ")
+        pfad = teile[1] if len(teile) > 1 else "/"
         schluessel = None
-        for zeile in kopf.decode("latin-1").split("\r\n"):
+        for zeile in zeilen[1:]:
             name, _, wert = zeile.partition(":")
             if name.strip().lower() == "sec-websocket-key":
                 schluessel = wert.strip()
         if not schluessel:
             conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
-            return False
+            return None
         antwort = base64.b64encode(hashlib.sha1((schluessel + WS_GUID).encode()).digest()).decode()
         conn.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                       f"Sec-WebSocket-Accept: {antwort}\r\n\r\n").encode())
-        return True
+        return pfad
 
     def _nachrichten(self, conn):
         teile = []
@@ -226,6 +271,27 @@ class Empfang:
                 if fin:
                     yield b"".join(teile).decode("utf-8", "replace")
                     teile = []
+
+
+def eigene_adressen():
+    # IPv4-Adressen dieses Rechners im lokalen Netz (ohne 127.x), wichtigste zuerst
+    ips = []
+    try:   # Adresse der Schnittstelle, über die der Rechner ins Netz geht (es wird nichts gesendet)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            ips.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(info[4][0])
+    except OSError:
+        pass
+    eindeutig = []
+    for ip in ips:
+        if not ip.startswith("127.") and ip not in eindeutig:
+            eindeutig.append(ip)
+    return eindeutig
 
 
 EMPFANG = Empfang()
@@ -519,6 +585,13 @@ def aufnehmen_geaendert(self, context):
 
 class SF_Einstellungen(bpy.types.PropertyGroup):
     port: bpy.props.IntProperty(name="Port", default=8765, min=1024, max=65535)
+    netzwerk: bpy.props.BoolProperty(
+        name="Im Netzwerk erreichbar", default=False,
+        description="Auch Verbindungen von anderen Rechnern im lokalen Netz annehmen "
+                    "(macOS fragt beim ersten Mal, ob Blender eingehende Verbindungen annehmen darf)")
+    kennwort: bpy.props.StringProperty(
+        name="Kennwort", default="", subtype="PASSWORD",
+        description="Optional: nur ein Studio mit diesem Kennwort darf senden")
     aufnehmen: bpy.props.BoolProperty(name="Aufnehmen (Keyframes)", default=False, update=aufnehmen_geaendert,
                                       description="Empfangene Bewegung als Keyframes in die Zeitleiste schreiben")
     aufnahme_zeit: bpy.props.BoolProperty(
@@ -533,7 +606,8 @@ class SF_OT_starten(bpy.types.Operator):
     bl_description = "WebSocket-Server starten, damit das Studio senden kann"
 
     def execute(self, context):
-        EMPFANG.starten(context.scene.sf_einstellungen.port)
+        e = context.scene.sf_einstellungen
+        EMPFANG.starten(e.port, e.netzwerk, e.kennwort)
         if EMPFANG.fehler:
             self.report({"ERROR"}, EMPFANG.fehler)
             return {"CANCELLED"}
@@ -563,12 +637,26 @@ class SF_PT_panel(bpy.types.Panel):
         if EMPFANG.laeuft:
             lay.operator("strichfiguren.stoppen", icon="PAUSE")
             if EMPFANG.verbindungen:
-                lay.label(text=f"Studio verbunden · {EMPFANG.anzahl} Bilder", icon="CHECKMARK")
+                von = ", ".join(EMPFANG.gegenstellen) or "?"
+                lay.label(text=f"Studio verbunden ({von}) · {EMPFANG.anzahl} Bilder", icon="CHECKMARK")
             else:
-                lay.label(text=f"Wartet auf ws://localhost:{EMPFANG.port}", icon="TIME")
+                lay.label(text="Wartet auf das Studio – Adresse dort eintragen:", icon="TIME")
+            spalte = lay.column(align=True)
+            for adresse in EMPFANG.adressen:
+                spalte.label(text=adresse, icon="WORLD" if "localhost" not in adresse else "HOME")
+            if EMPFANG.netzwerk and len(EMPFANG.adressen) < 2:
+                lay.label(text="Keine Netzwerkadresse gefunden (WLAN an?)", icon="ERROR")
+            if EMPFANG.kennwort:
+                lay.label(text="Mit Kennwort geschützt", icon="LOCKED")
+            if EMPFANG.abgewiesen:
+                lay.label(text=f"Abgewiesen (Kennwort falsch): {EMPFANG.abgewiesen}", icon="CANCEL")
         else:
             row = lay.row()
             row.prop(e, "port")
+            lay.prop(e, "netzwerk")
+            sub = lay.row()
+            sub.enabled = e.netzwerk
+            sub.prop(e, "kennwort")
             lay.operator("strichfiguren.starten", icon="PLAY")
         if EMPFANG.fehler:
             lay.label(text=EMPFANG.fehler, icon="ERROR")
