@@ -561,6 +561,7 @@ async function kamerasAuflisten() {
   for (const p of P) {
     const aktiv = kameraId(p) || gemerkt(KAMERA_SPEICHER[p.nr]);
     p.selKamera.replaceChildren(...kameras.map((d, i) => new Option(d.label || `Kamera ${i + 1}`, d.deviceId, false, d.deviceId === aktiv)));
+    p.selKamera.title = p.selKamera.selectedOptions[0]?.text ?? '';
   }
   ansichtAnpassen();
 }
@@ -599,6 +600,7 @@ async function kameraWechseln(p) {
     return;
   }
   merken(KAMERA_SPEICHER[p.nr], id);
+  p.selKamera.title = p.selKamera.selectedOptions[0]?.text ?? '';
   if (!p.stream) { status('Diese Kamera wird beim nächsten Klick auf „Kamera“ verwendet.'); return; }
   if (S.aufnahme) { status('Während einer Aufnahme lässt sich die Kamera nicht wechseln.'); kamerasAuflisten(); return; }
   try {
