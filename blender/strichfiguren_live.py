@@ -77,7 +77,7 @@ class Empfang:
     def __init__(self):
         self.lock = threading.Lock()
         self.laeuft = False
-        self.thread = None
+        self.threads = []
         self.port = 8765
         self.letzte = None        # zuletzt empfangene Nachricht (dict)
         self.puffer = []          # alle Nachrichten seit dem letzten Abholen (für die Aufnahme)
@@ -89,24 +89,34 @@ class Empfang:
         if self.laeuft:
             return
         self.port, self.fehler, self.anzahl = port, "", 0
-        try:
-            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            srv.bind(("127.0.0.1", port))
-            srv.listen(4)
-            srv.settimeout(0.5)
-        except OSError as e:
-            self.fehler = f"Port {port} geht nicht: {e}"
+        # „localhost“ ist je nach Browser IPv4 (Chrome) oder IPv6 (Safari) – auf beiden lauschen,
+        # aber nur auf diesem Rechner
+        server, fehler = [], []
+        for familie, adresse in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            try:
+                srv = socket.socket(familie, socket.SOCK_STREAM)
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if familie == socket.AF_INET6:
+                    srv.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                srv.bind((adresse, port))
+                srv.listen(4)
+                srv.settimeout(0.5)
+                server.append(srv)
+            except OSError as e:
+                fehler.append(f"{adresse}: {e}")
+        if not server:
+            self.fehler = f"Port {port} geht nicht: " + "; ".join(fehler)
             return
         self.laeuft = True
-        self.thread = threading.Thread(target=self._annehmen, args=(srv,), daemon=True)
-        self.thread.start()
+        self.threads = [threading.Thread(target=self._annehmen, args=(srv,), daemon=True) for srv in server]
+        for t in self.threads:
+            t.start()
 
     def stoppen(self):
         self.laeuft = False
-        if self.thread:
-            self.thread.join(timeout=2)
-        self.thread = None
+        for t in getattr(self, "threads", []):
+            t.join(timeout=2)
+        self.threads = []
 
     def abholen(self):
         with self.lock:
