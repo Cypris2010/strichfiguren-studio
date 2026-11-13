@@ -244,6 +244,7 @@ export class Studio3D {
     this.setFigurenZahl(1);
 
     this.beiBild = null;   // wird vor jedem Bild aufgerufen
+    this.nachBild = null;  // danach, wenn alle Figuren stehen (Live-Stream an Blender)
     this.flug = null;
     this.messung = { ms: 0, abstand: 1000 / 60, zuletzt: 0 };   // Dauer eines Bildes (ms) und Abstand zwischen zwei Bildern
     this.setStil('flach');
@@ -311,6 +312,7 @@ export class Studio3D {
   bild(t) {
     const anfang = performance.now();
     this.beiBild?.(t);
+    this.nachBild?.(this);
     if (this.flug) {
       const f = this.flug, k = Math.min(1, (performance.now() - f.start) / f.dauer), e = weich(k);
       this.camera.position.lerpVectors(f.von, f.nach, e);

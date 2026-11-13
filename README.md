@@ -133,6 +133,38 @@ erzeugt, ohne Samples.
 - Fürs Luftband wird die Bewegung kaum geglättet (jede Glättung verzögert und verschiebt den Schlag);
   der Regler *Glättung* wirkt nur auf die Figur.
 
+## Live an Blender
+
+Das Studio kann die Bewegung live an Blender schicken. Dort bewegt sie Strichfiguren, die man ausleuchten,
+filmen und als Video rendern kann. Auf Wunsch zeichnet Blender alles als Keyframes auf.
+
+Am schnellsten: Blender direkt mit dem Startskript öffnen. Es lädt das Addon, startet den Empfang und stellt
+die Ansicht auf die Figur ein:
+
+```bash
+/Applications/Blender.app/Contents/MacOS/Blender --python blender/live_starten.py
+```
+
+Oder dauerhaft installieren:
+
+1. In Blender (ab 3.6): *Bearbeiten → Einstellungen → Add-ons → Von Datenträger installieren …* →
+   `blender/strichfiguren_live.py` wählen und den Haken setzen.
+2. Im 3D-Fenster mit **N** die Seitenleiste öffnen → Reiter **Strichfiguren** → **Empfang starten**.
+3. Im Studio unter **⚙ → Auswertung → Live an Blender** den Haken bei *Bewegung senden* setzen. Unter dem
+   Schalter steht, ob die Verbindung steht. Ist Blender noch nicht bereit, versucht es das Studio alle 2 s erneut.
+
+Es geht live mit Kamera und beim Abspielen einer Aufnahme. In Blender entsteht je Figur eine Sammlung
+*Strichfigur N* mit Empties an den Gelenken (`SF1_pelvis`, `SF1_lWr`, …), Gliedern, die per Constraint von Gelenk
+zu Gelenk reichen, und dem Kopf `SF1_Kopf`. Der Kopf trägt die Drehung und die Mimik als Eigenschaften
+(`augeL`, `mundAuf`, `laechelnL`, …). Augen und Mund folgen der Mimik.
+
+**Aufnehmen (Keyframes)** schreibt die empfangene Bewegung in die Zeitleiste. Spielt das Studio eine Aufnahme
+ab, landet jedes Bild bei seiner Aufnahme-Zeit (ab dem Startbild der Szene). So passt es später zur Tonspur.
+Live wird ab dem aktuellen Bild in Echtzeit aufgezeichnet.
+
+Format der Nachrichten: siehe Kopf von `js/stream.js`. Der Server lauscht nur auf diesem Rechner (127.0.0.1)
+und braucht in Blender keine zusätzlichen Pakete.
+
 ## Tipps für Aufnahmen
 
 Stativ, ganzer Körper im Bild, eine Person pro Video, leicht schräg von vorn, gutes Licht.
@@ -155,6 +187,8 @@ Für Schlagzeug lieber mit 60 Bildern pro Sekunde filmen und analysieren.
 | `js/klang.js` | Klangerzeugung (Schlagzeug, Gitarre, Bass) live und als WAV-Tonspur |
 | `js/midi.js` | Luftband-Töne als MIDI-Datei, eine Spur je Person |
 | `js/ansichten.js` | Zwei Kamerawinkel einer Person: Winkel bestimmen, beide Posen verschmelzen |
+| `js/stream.js` | Live-Stream der Gelenke, Kopfdrehung und Mimik an Blender (WebSocket) |
+| `blender/strichfiguren_live.py` | Blender-Addon: empfängt den Stream, baut die Figuren, nimmt Keyframes auf |
 | `js/app.js` | Bedienung, Einstellungen je Gerät, zweite Kamera, Aufnahme, Analyse, Abspielen, Export |
 
 Die JSON-Datei enthält die **Rohdaten** (Welt- und Bildpunkte je Bild). Glättung und Übertragung auf die Figur passieren beim Abspielen. So lassen sich alte Aufnahmen später mit besseren Verfahren neu verarbeiten.

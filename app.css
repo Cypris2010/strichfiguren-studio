@@ -172,7 +172,7 @@ button:hover:not(:disabled), .knopf:hover { border-color: var(--akzent); }
 button:disabled, .knopf.gesperrt { opacity: .4; cursor: default; pointer-events: none; }
 button.aufnahme { background: var(--rot); border-color: var(--rot); color: #fff; }
 
-select {
+select, input[type="text"] {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--rand);

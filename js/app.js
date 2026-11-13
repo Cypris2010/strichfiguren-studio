@@ -23,6 +23,7 @@ import { Luftband, luftFilter, luftExtraFilter } from './luftband.js';
 import { Klang, tonspurRendern } from './klang.js';
 import { midiErzeugen } from './midi.js';
 import { Verschmelzer } from './ansichten.js';
+import { BlenderStream } from './stream.js';
 
 const FORMAT = 'strichfiguren-take';
 const $ = id => document.getElementById(id);
@@ -42,6 +43,7 @@ const ui = {
   btnPlay: $('btnPlay'), rngZeit: $('rngZeit'), zeit: $('zeit'), btnExport: $('btnExport'), dateiJson: $('dateiJson'),
   chkLuftband: $('chkLuftband'), selAkkorde: $('selAkkorde'), selKlang: $('selKlang'), rngEmpfindlich: $('rngEmpfindlich'),
   btnTonspur: $('btnTonspur'), btnMidi: $('btnMidi'),
+  chkBlender: $('chkBlender'), txtBlender: $('txtBlender'), blenderInfo: $('blenderInfo'),
 };
 
 const studio = new Studio3D($('dreiD'));
@@ -1782,6 +1784,24 @@ ui.btnTonspur.onclick = tonspurSpeichern;
 ui.btnMidi.onclick = midiSpeichern;
 ui.dateiJson.onchange = () => { const f = ui.dateiJson.files[0]; ui.dateiJson.value = ''; if (f) importieren(f); };
 
+// Live-Stream an Blender: nach jedem Bild Gelenke, Kopf und Mimik aller sichtbaren Figuren
+const BLENDER_TEXTE = {
+  aus: 'aus', verbinde: 'verbinde …', verbunden: 'verbunden – Blender bekommt die Bewegung',
+  wartet: 'wartet auf Blender (Addon gestartet?) – versuche es alle 2 s', fehler: 'Adresse ungültig (z. B. ws://localhost:8765)',
+};
+const blender = new BlenderStream({ beiStatus: z => { ui.blenderInfo.textContent = BLENDER_TEXTE[z] ?? z; } });
+studio.nachBild = s => {
+  if (!blender.verbunden) return;
+  const aufnahme = S.mode === 'take' && S.take;
+  blender.bild(s, aufnahme ? takeZeit() : performance.now() / 1000, aufnahme ? 'aufnahme' : S.mode === 'idle' ? 'ruhe' : 'live', !!aufnahme && laeuft());
+};
+ui.txtBlender.value = gemerkt('blender-adresse') || ui.txtBlender.value;
+ui.chkBlender.onchange = () => {
+  if (ui.chkBlender.checked) { merken('blender-adresse', ui.txtBlender.value.trim()); blender.starten(ui.txtBlender.value.trim()); }
+  else blender.stoppen();
+};
+ui.txtBlender.onchange = () => { if (ui.chkBlender.checked) { blender.stoppen(); ui.chkBlender.onchange(); } };
+
 addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (S.einmessen) { einmessenBeenden(); status('Einmessen beendet.'); }
@@ -1797,5 +1817,5 @@ addEventListener('keydown', e => {
 window.studio = {
   S, P, studio, sucher, klang, takeSetzen, neuerTake, detektor, gesichtErkennung, mimik, liveStarten, liveBild, posenBerechnen, kitGeaendert,
   geraetEinstellungenLaden, geraetEinstellungenSpeichern,
-  toeneBerechnen, midiErzeugen, tonspurRendern, ansichtAnpassen, Verschmelzer, kamerasPruefen, zweiteWiederAus,
+  toeneBerechnen, midiErzeugen, tonspurRendern, ansichtAnpassen, Verschmelzer, kamerasPruefen, zweiteWiederAus, blender,
 };
