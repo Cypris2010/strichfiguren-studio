@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strichfiguren-Studio</title>
+<link rel="stylesheet" href="app.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
+  }
+}
+</script>
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<header class="kopf">
+  <h1>Strichfiguren-Studio</h1>
+  <p id="status" class="status">Kamera starten oder ein Video öffnen.</p>
+</header>
+
+<main class="buehne">
+  <section class="quelle">
+    <div class="werkzeuge">
+      <button id="btnKamera">Kamera</button>
+      <label class="knopf" id="lblVideo">Video öffnen …<input id="dateiVideo" type="file" accept="video/*" hidden></label>
+      <button id="btnAufnahme" disabled>● Aufnahme</button>
+      <button id="btnAnalyse" disabled>Analysieren</button>
+    </div>
+    <div class="videoRahmen" id="videoRahmen">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <p class="leer" id="videoLeer">Kamera starten oder ein Video öffnen.<br>Ganzer Körper im Bild, Stativ, gutes Licht.</p>
+    </div>
+    <div class="werkzeuge">
+      <label>Modell
+        <select id="selModell">
+          <option value="lite">schnell</option>
+          <option value="full" selected>ausgewogen</option>
+          <option value="heavy">genau</option>
+        </select>
+      </label>
+      <label>Analyse
+        <select id="selFps">
+          <option value="30" selected>30 Bilder/s</option>
+          <option value="60">60 Bilder/s</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="chkSpiegeln"> Spiegeln</label>
+    </div>
+  </section>
+
+  <section class="ansicht">
+    <div id="dreiD" class="dreiD"></div>
+    <div class="werkzeuge">
+      <span class="gedimmt">Kamera</span>
+      <button data-ansicht="vorne">Vorne</button>
+      <button data-ansicht="seite">Seite</button>
+      <button data-ansicht="schraeg">Schräg</button>
+      <button data-ansicht="oben">Oben</button>
+      <label><input type="checkbox" id="chkDrehen"> Drehen</label>
+      <label>Stil
+        <select id="selStil">
+          <option value="flach" selected>Flach</option>
+          <option value="plastisch">Plastisch</option>
+          <option value="neon">Neon</option>
+        </select>
+      </label>
+      <label>Glättung <input type="range" id="rngGlaettung" min="0" max="10" step="1" value="5"></label>
+      <label><input type="checkbox" id="chkBoden" checked> Füße am Boden</label>
+    </div>
+  </section>
+</main>
+
+<footer class="zeitleiste">
+  <button id="btnPlay" disabled aria-label="Abspielen">▶</button>
+  <input type="range" id="rngZeit" min="0" max="1" step="any" value="0" disabled aria-label="Zeit">
+  <span id="zeit">0:00.0 / 0:00.0</span>
+  <button id="btnExport" disabled>Export JSON</button>
+  <label class="knopf">Import JSON<input id="dateiJson" type="file" accept=".json,application/json" hidden></label>
+</footer>
+</body>
+</html>
